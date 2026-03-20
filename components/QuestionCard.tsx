@@ -3,6 +3,7 @@
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
+import remarkGfm from "remark-gfm";
 import type { Question } from "@/lib/questions";
 
 interface Props {
@@ -111,7 +112,7 @@ export default function QuestionCard({ question, index }: Props) {
           {/* Intro (if any) */}
           {intro && (
             <div className="px-4 py-3 prose-dark">
-              <ReactMarkdown rehypePlugins={[rehypeHighlight]}>{intro}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>{intro}</ReactMarkdown>
             </div>
           )}
 
@@ -144,7 +145,7 @@ export default function QuestionCard({ question, index }: Props) {
                     </button>
                     {isOpen && (
                       <div className="px-4 pb-4 pt-1 prose-dark">
-                        <ReactMarkdown rehypePlugins={[rehypeHighlight]}>{section.content}</ReactMarkdown>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>{section.content}</ReactMarkdown>
                       </div>
                     )}
                   </div>
@@ -154,7 +155,7 @@ export default function QuestionCard({ question, index }: Props) {
           ) : (
             // No section headers found — render all content as-is
             <div className="px-4 pb-4 prose-dark">
-              <ReactMarkdown rehypePlugins={[rehypeHighlight]}>{question.content}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>{question.content}</ReactMarkdown>
             </div>
           )}
         </div>
