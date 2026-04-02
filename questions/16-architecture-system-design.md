@@ -408,3 +408,209 @@ Nhận webhook:
 **Trick 2**: "2 Pizza Rule" của Amazon là gì và liên quan thế nào đến microservices?
 
 *Trả lời*: Team không nên lớn hơn số người có thể ăn hết 2 chiếc pizza (6-8 người). Mỗi microservice nên được owned bởi 1 team như vậy — **Conway's Law**: system architecture phản ánh communication structure của organization. Tách service mà không tách team thì vẫn bị coupling về mặt tổ chức.
+
+---
+
+## Q8: CAP Theorem — Consistency, Availability, Partition Tolerance
+
+**Trả lời Basic**
+
+> CAP Theorem: Distributed system **không thể đảm bảo cả 3 cùng lúc** — chỉ chọn được 2 trong 3 khi có network partition.
+
+| Property | Nghĩa |
+|---|---|
+| **Consistency** | Mọi node đọc được data mới nhất (hoặc error) |
+| **Availability** | Mọi request đều nhận được response (không error, nhưng có thể stale) |
+| **Partition Tolerance** | System tiếp tục hoạt động dù mạng bị chia cắt |
+
+> **Partition Tolerance là bắt buộc** trong distributed system thực tế — network failure không thể tránh.
+>
+> Vậy câu hỏi thực sự là: khi có partition, chọn **CP** (consistency, từ chối request) hay **AP** (available, trả về data có thể stale)?
+
+**Trả lời Nâng cao**
+
+| Database | Chọn | Trade-off |
+|---|---|---|
+| MySQL/PostgreSQL (single master) | CP | Khi master unreachable → reject write |
+| Cassandra, DynamoDB | AP | Eventual consistency — data có thể stale |
+| ZooKeeper, etcd | CP | Dùng cho distributed coordination |
+| Couchbase | Tunable | Cấu hình được per-operation |
+
+> **Eventual Consistency** (AP): Tất cả node cuối cùng sẽ đồng thuận, nhưng có thể đọc stale data trong thời gian ngắn.
+
+```
+User A: update balance 1000 → 900
+User B (milliseconds later): đọc balance → có thể thấy 1000 (stale) hoặc 900
+Sau vài giây (replication): mọi node đều thấy 900
+```
+
+**Câu hỏi tình huống**
+
+> Bạn design hệ thống like/view count cho social network (triệu user). Chọn CP hay AP? Tại sao?
+
+*Trả lời*: **AP** — người dùng thấy like count lệch 1-2 cái trong vài giây là chấp nhận được (không ai bị hại). Dùng CP cho like count → reject request khi có partition → user không like được → trải nghiệm tệ. Ngược lại, banking (balance) phải là CP — consistency quan trọng hơn availability.
+
+**Câu hỏi Trick**
+
+> PACELC Theorem là gì? Tại sao quan trọng hơn CAP trong thực tế?
+
+*Trả lời*: CAP chỉ xét khi có **partition**. PACELC mở rộng: kể cả **khi không có partition**, vẫn có trade-off giữa **Latency và Consistency**. Replication synchronous → consistency cao nhưng latency cao. Replication asynchronous → latency thấp nhưng stale read. Thực tế partition hiếm xảy ra, nhưng latency/consistency trade-off xảy ra **mỗi request** → PACELC model thực tiễn hơn.
+
+---
+
+## Q9: Async Communication vs Service Discovery — Khi nào dùng cái nào, khi nào dùng cả hai?
+
+**Trả lời Basic** *(Phân biệt đặc điểm)*
+
+> Đây là 2 khái niệm **giải quyết vấn đề khác nhau**, không phải lựa chọn thay thế nhau.
+
+| | Async (Queue/Event) | Service Discovery |
+|---|---|---|
+| **Giải quyết vấn đề** | Coupling về thời gian — producer và consumer không cần online cùng lúc | Coupling về địa chỉ — service tìm nhau khi IP thay đổi |
+| **Giao tiếp** | Indirect (qua broker) | Direct (sau khi lookup) |
+| **Kết quả** | Fire-and-forget hoặc nhận kết quả sau | Nhận kết quả ngay (sync) |
+| **Dùng khi** | Không cần response ngay, cần decouple workload | Cần gọi trực tiếp nhưng địa chỉ thay đổi (dynamic infra) |
+| **Ví dụ** | Kafka, RabbitMQ, SQS | Kubernetes Service, Consul, Eureka |
+
+**Trả lời Nâng cao**
+
+> Hình dung 3 kịch bản:
+
+**Kịch bản 1 — Sync + Service Discovery (gọi trực tiếp, địa chỉ động):**
+```
+OrderService → [lookup] payment-service → PaymentService (3 pod, IP thay đổi)
+              Service Discovery giúp tìm đúng IP
+              Giao tiếp vẫn là sync HTTP/gRPC
+```
+*Dùng khi*: Cần kết quả ngay (check tồn kho, verify payment), chạy trên dynamic infra (K8s, cloud).
+
+**Kịch bản 2 — Async + Hardcode endpoint (địa chỉ tĩnh):**
+```
+OrderService → SQS queue (URL cố định) → EmailWorker
+              Không cần Service Discovery vì queue URL không đổi
+              Giao tiếp là async, không cần EmailWorker online
+```
+*Dùng khi*: Queue/broker có endpoint ổn định, không cần biết worker đang ở đâu.
+
+**Kịch bản 3 — Async + Service Discovery (cả hai):**
+```
+OrderService → Kafka (broker cluster, địa chỉ động)
+              Service Discovery tìm Kafka broker leader
+              Giao tiếp vẫn là async
+```
+*Dùng khi*: Kafka cluster tự re-elect leader, producer cần tìm đúng broker leader — đây chính là Kafka's built-in discovery.
+
+**Câu hỏi tình huống**
+
+> Bạn thiết kế hệ thống: `UserService` tạo user xong cần: (1) trả kết quả cho client ngay, (2) cập nhật search index (Elasticsearch), (3) gửi welcome email, (4) notify `RecommendationService` để tạo profile. Thiết kế communication như thế nào?
+
+*Trả lời*:
+
+```
+Client → UserService.createUser()
+              │
+              ├── [Sync] Lưu vào DB ← bắt buộc trước khi return
+              │
+              ├── return 201 Created → Client (không chờ gì thêm)
+              │
+              └── publish UserCreatedEvent → Kafka
+                        ├── SearchIndexWorker  → cập nhật ES
+                        ├── EmailWorker        → gửi email
+                        └── RecommendationService → (dùng Service Discovery
+                                                     nếu cần call thêm internal API)
+```
+
+- `UserService` ↔ `DB`: **Sync** — phải thành công mới return 201
+- `UserService` → workers: **Async** — decouple, không cần return ngay
+- Kafka broker address: resolve qua Kafka's own metadata protocol (dạng Service Discovery)
+- Nếu `RecommendationService` cần gọi API khác trong khi xử lý event: **Service Discovery** (K8s DNS) để tìm đúng service
+
+**Câu hỏi Trick**
+
+**Trick 1**: Service A gọi Service B sync, B down → A bị lỗi. Giải pháp là Async hay Service Discovery?
+
+*Trả lời*: **Async** — Service Discovery không giúp ở đây vì vấn đề không phải là "không tìm thấy B" mà là "B không available". Nếu chuyển sang Async (queue), A publish message rồi return thành công, B xử lý khi recover. Nếu bắt buộc phải sync, cần thêm **Circuit Breaker** để fail fast và trả fallback thay vì chờ timeout.
+
+---
+
+**Trick 2**: Khi nào Async lại khó hơn Sync và không nên dùng?
+
+*Trả lời*: Async phức tạp hơn khi:
+- **Cần kết quả ngay** — ví dụ validate coupon code trước khi cho user tiếp tục checkout
+- **Cần transaction atomicity** — A và B phải thành công cùng nhau, không phải một cái commit rồi cái kia fail
+- **Debugging và tracing** — async flow khó trace hơn sync, cần distributed tracing (Jaeger, Zipkin)
+- **Ordering quan trọng** — queue đảm bảo ordering trong cùng partition, nhưng cross-partition không đảm bảo
+
+**Rule of thumb**: Nếu user đang chờ kết quả → **Sync**. Nếu đây là side effect không ảnh hưởng đến response → **Async**.
+
+---
+
+## Q10: Sync-over-Async và Request-Reply Pattern — Khi cần kết quả từ Async
+
+**Trả lời Basic**
+
+> Đôi khi cần giao tiếp Async nhưng vẫn cần kết quả — gọi là **Sync-over-Async** hay **Request-Reply over Queue**.
+
+| Pattern | Cơ chế | Dùng khi |
+|---|---|---|
+| **Polling** | Client gửi request, nhận job ID, hỏi lại kết quả | Job chạy lâu (minutes), user chấp nhận chờ |
+| **Callback / Webhook** | Server gọi lại client khi xong | Client có endpoint nhận callback |
+| **Reply Queue** | Mỗi request có reply queue riêng, chờ response | Async nhưng vẫn cần kết quả trong cùng flow |
+| **Long Polling** | Client giữ connection, server trả lời khi có kết quả | Near-realtime, không muốn dùng WebSocket |
+
+**Trả lời Nâng cao**
+
+**Polling Pattern — xử lý job lâu:**
+
+```
+Client → POST /reports/generate → { jobId: "abc123" }
+              ↓ (async)
+         ReportWorker (Kafka consumer, chạy 2 phút)
+
+Client → GET /reports/abc123/status → { status: "processing" }  (30s sau)
+Client → GET /reports/abc123/status → { status: "done", url: "..." }  (2 phút sau)
+```
+
+**Reply Queue Pattern — RabbitMQ Request-Reply:**
+
+```java
+// Producer — gửi với replyTo queue
+AMQP.BasicProperties props = new AMQP.BasicProperties.Builder()
+    .correlationId(UUID.randomUUID().toString())
+    .replyTo("amq.rabbitmq.reply-to")  // Temp queue cho reply
+    .build();
+
+channel.basicPublish("", "payment-queue", props, message);
+
+// Chờ reply (trong thực tế dùng async với timeout)
+String reply = replyConsumer.waitForReply(correlationId, Duration.ofSeconds(30));
+```
+
+**Câu hỏi tình huống**
+
+> Hệ thống cần xuất báo cáo 1 triệu dòng, mất 3-5 phút. User click "Export" và chờ. Thiết kế thế nào để user không bị timeout nhưng vẫn biết khi nào xong?
+
+*Trả lời*:
+
+```
+1. POST /export → return 202 Accepted { jobId: "xyz" }
+   └── Push job vào queue, worker bắt đầu xử lý
+
+2. Client poll GET /export/xyz → { status: "processing", progress: 45% }
+   (hoặc WebSocket push status update realtime)
+
+3. Worker xong → upload file lên S3 → update job status = "done"
+
+4. Client poll lần cuối → { status: "done", downloadUrl: "https://s3.../report.csv" }
+```
+
+Dùng **HTTP 202 Accepted** (không phải 200) — chuẩn REST cho async operation. Job ID lưu vào Redis với TTL để tự cleanup.
+
+**Câu hỏi Trick**
+
+**Trick**: Polling vs WebSocket cho job status — khi nào dùng cái nào?
+
+*Trả lời*:
+- **Polling**: Đơn giản, không cần infrastructure thêm. Phù hợp khi job chạy lâu (>1 phút), tần suất check thấp (mỗi 5-10 giây). Nhược điểm: delay tùy interval, tốn request không cần thiết
+- **WebSocket**: Realtime, server push khi có update. Phù hợp khi cần feedback ngay (<10 giây), nhiều user cùng theo dõi. Nhược điểm: phức tạp hơn (persistent connection, scale với Redis Pub/Sub)
+- **Server-Sent Events (SSE)**: Middle ground — server push, nhưng chỉ một chiều (server → client), đơn giản hơn WebSocket. Tốt cho dashboard realtime đọc nhiều, không cần client gửi

@@ -268,3 +268,216 @@ Gợi ý trả lời:
   <Image src={url} fill style={{ objectFit: 'cover' }} alt="..." />
 </div>
 ```
+
+---
+
+## Q5: Caching Strategy trong Next.js App Router
+
+### Trả lời Basic
+
+Next.js có 4 tầng cache:
+
+| Cache | Lưu gì | Invalidate khi |
+|---|---|---|
+| **Request Memoization** | `fetch()` dedupe trong cùng render | Mỗi request mới |
+| **Data Cache** | `fetch()` response | `revalidate`, `cache: 'no-store'` |
+| **Full Route Cache** | Static page HTML | Redeploy, `revalidatePath()` |
+| **Router Cache** | Client-side page navigation | 30s (dynamic) / 5min (static) |
+
+### Trả lời Nâng cao
+
+```javascript
+// On-demand revalidation — invalidate sau khi data thay đổi
+// app/api/revalidate/route.ts
+import { revalidatePath, revalidateTag } from 'next/cache';
+
+export async function POST(request: Request) {
+  const { path, tag } = await request.json();
+
+  if (tag) revalidateTag(tag);         // Invalidate theo tag
+  if (path) revalidatePath(path);      // Invalidate theo path
+
+  return Response.json({ revalidated: true });
+}
+
+// Fetch với tag để revalidate sau
+const data = await fetch('/api/products', {
+  next: { tags: ['products'] }
+});
+
+// Khi có update: gọi revalidateTag('products')
+```
+
+### Câu hỏi Trick
+
+**Trick:** `revalidatePath('/')` có revalidate tất cả page không?
+
+→ Không — chỉ revalidate đúng path `/`. Để revalidate tất cả page liên quan đến một data type, dùng **tag-based revalidation** (`revalidateTag`) — tag nhiều fetch call cùng tag, invalidate 1 lần là xong.
+
+---
+
+## Q6: Authentication trong Next.js — NextAuth.js
+
+### Trả lời Basic
+
+```typescript
+// app/api/auth/[...nextauth]/route.ts
+import NextAuth from 'next-auth';
+import GoogleProvider from 'next-auth/providers/google';
+import CredentialsProvider from 'next-auth/providers/credentials';
+
+const handler = NextAuth({
+  providers: [
+    GoogleProvider({
+      clientId: process.env.GOOGLE_ID!,
+      clientSecret: process.env.GOOGLE_SECRET!,
+    }),
+    CredentialsProvider({
+      async authorize(credentials) {
+        const user = await verifyCredentials(credentials);
+        return user ?? null;
+      }
+    })
+  ],
+  callbacks: {
+    async jwt({ token, user }) {
+      if (user) token.role = user.role; // Add custom claim
+      return token;
+    },
+    async session({ session, token }) {
+      session.user.role = token.role;
+      return session;
+    }
+  }
+});
+
+export { handler as GET, handler as POST };
+```
+
+### Trả lời Nâng cao
+
+**Bảo vệ route bằng Middleware:**
+
+```typescript
+// middleware.ts
+import { withAuth } from 'next-auth/middleware';
+
+export default withAuth({
+  callbacks: {
+    authorized: ({ token, req }) => {
+      if (req.nextUrl.pathname.startsWith('/admin')) {
+        return token?.role === 'ADMIN';
+      }
+      return !!token;
+    },
+  },
+});
+
+export const config = {
+  matcher: ['/dashboard/:path*', '/admin/:path*'],
+};
+```
+
+### Câu hỏi Trick
+
+**Trick:** Session token được lưu ở đâu? Cookie hay localStorage?
+
+→ NextAuth mặc định dùng **HttpOnly cookie** (không thể đọc bằng JavaScript) → bảo vệ khỏi XSS. `localStorage` không nên lưu token vì XSS có thể steal. JWT session encode toàn bộ user data vào cookie, database session chỉ lưu session ID trong cookie.
+
+---
+
+## Q7: Next.js Deployment — Vercel vs Self-hosted
+
+### Trả lời Basic
+
+| | Vercel | Self-hosted (Docker/K8s) |
+|---|---|---|
+| Setup | Zero config, push = deploy | Cần config server |
+| Edge Network | Có (160+ PoP) | Tự setup CDN |
+| ISR | Native support | Cần config cache server |
+| Cost | Tính theo usage | Predictable (server cost) |
+| Control | Hạn chế | Toàn quyền |
+| Vendor lock-in | Có (một số feature) | Không |
+
+### Trả lời Nâng cao
+
+**Self-hosted với Docker:**
+
+```dockerfile
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
+EXPOSE 3000
+CMD ["node", "server.js"]
+```
+
+> `output: 'standalone'` trong `next.config.js` tạo self-contained bundle với minimal node_modules.
+
+### Câu hỏi Trick
+
+**Trick:** ISR hoạt động thế nào khi self-host nhiều instance?
+
+→ Vấn đề: mỗi instance có cache riêng → inconsistent. Fix: Dùng **shared cache handler** (Redis) thay vì filesystem cache. Next.js hỗ trợ custom cache handler qua `cacheHandler` config. Trên Vercel điều này được handle tự động.
+
+---
+
+## Q8: State Management với Server Components
+
+### Trả lời Basic
+
+| Approach | Dùng khi |
+|---|---|
+| URL Search Params | Shareable state (filters, pagination) |
+| Server Component props | Data từ server xuống |
+| `useState` / Zustand | Client-only UI state |
+| React Query / SWR | Client-side data fetching với cache |
+| Cookies | Cross-request state (auth, preferences) |
+
+### Trả lời Nâng cao
+
+```typescript
+// URL state — shareable, bookmarkable
+// app/products/page.tsx (Server Component)
+export default async function ProductsPage({
+  searchParams
+}: {
+  searchParams: { category?: string; page?: string }
+}) {
+  const products = await getProducts({
+    category: searchParams.category,
+    page: Number(searchParams.page) || 1,
+  });
+
+  return (
+    <>
+      <FilterBar />       {/* Client Component, update URL */}
+      <ProductGrid products={products} />  {/* Server Component */}
+    </>
+  );
+}
+```
+
+**Tránh lift state lên client không cần thiết:**
+```
+// Sai: Toàn bộ page là Client Component chỉ vì cần filter state
+'use client'
+export default function ProductsPage() { ... }
+
+// Đúng: Tách filter thành Client Component nhỏ, page vẫn là Server Component
+```
+
+### Câu hỏi Trick
+
+**Trick:** Zustand store có dùng được trong Server Component không?
+
+→ Không — Server Component không có browser APIs, không có state, không có lifecycle. Zustand (và mọi client-side state management) chỉ dùng trong Client Component. Chia rõ: **server state** = fetch trong Server Component, **client UI state** = useState/Zustand trong Client Component.

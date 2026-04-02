@@ -325,3 +325,106 @@ Thiếu Trust Policy → không ai assume được role dù Permission đầy đ
 - **Cross-account access**: Account A cần truy cập resource ở Account B → Account A assume Role ở Account B
 - **Least privilege**: CI/CD pipeline assume role chỉ đủ quyền deploy, không dùng admin credentials thường xuyên
 - **Audit trail**: CloudTrail ghi lại ai assume role nào, lúc nào → traceable
+
+---
+
+## Q7: OWASP Top 10 — Các lỗ hổng phổ biến nhất
+
+**Trả lời Basic**
+
+| # | Vulnerability | Ví dụ |
+|---|---|---|
+| A01 | Broken Access Control | User A đọc data của User B |
+| A02 | Cryptographic Failures | Lưu password plaintext, dùng MD5 |
+| A03 | Injection | SQL Injection, Command Injection |
+| A04 | Insecure Design | Thiếu rate limit, không validate business logic |
+| A05 | Security Misconfiguration | Default password, debug mode production |
+| A06 | Vulnerable Components | Dependency có CVE (Log4Shell) |
+| A07 | Auth Failures | Weak password policy, no MFA |
+| A08 | Software Integrity Failures | Không verify artifact, supply chain attack |
+| A09 | Logging Failures | Không log security event, log sensitive data |
+| A10 | SSRF | App fetch URL do user cung cấp → internal metadata |
+
+**Trả lời Nâng cao**
+
+> **A01 — Broken Access Control (IDOR)** là nguy hiểm nhất và phổ biến nhất:
+
+```java
+// Lỗ hổng IDOR
+@GetMapping("/orders/{orderId}")
+public Order getOrder(@PathVariable Long orderId) {
+    return orderRepo.findById(orderId); // Ai cũng xem được order của người khác!
+}
+
+// Fix — kiểm tra ownership
+@GetMapping("/orders/{orderId}")
+public Order getOrder(@PathVariable Long orderId, @AuthenticationPrincipal User user) {
+    Order order = orderRepo.findById(orderId).orElseThrow();
+    if (!order.getUserId().equals(user.getId())) {
+        throw new ForbiddenException();
+    }
+    return order;
+}
+```
+
+**Câu hỏi Trick**
+
+> SSRF (Server-Side Request Forgery) nguy hiểm thế nào trên cloud?
+
+*Trả lời*: Nếu app fetch URL do user cung cấp, attacker có thể trỏ đến **AWS Instance Metadata Service** (`http://169.254.169.254/latest/meta-data/iam/security-credentials/`) → lấy IAM credentials của EC2 instance → toàn quyền AWS account. IMDSv2 (require token) giảm thiểu nhưng không loại bỏ hoàn toàn nếu có SSRF. Fix: whitelist domain được phép fetch, block internal IP ranges.
+
+---
+
+## Q8: Rate Limiting và DDoS Protection
+
+**Trả lời Basic**
+
+| Layer | Tool | Bảo vệ |
+|---|---|---|
+| DNS/Network | CloudFlare, AWS Shield | Volumetric DDoS |
+| CDN/WAF | CloudFlare WAF, AWS WAF | L7 DDoS, bot, known attacks |
+| Load Balancer | AWS ALB với WAF | Request rate |
+| Application | `express-rate-limit`, `resilience4j` | API rate limit per user |
+
+**Trả lời Nâng cao**
+
+```java
+// Spring Boot — rate limit với Bucket4j + Redis (distributed)
+@RestController
+public class ApiController {
+
+    private final LoadingCache<String, Bucket> buckets = Caffeine.newBuilder()
+        .expireAfterAccess(1, TimeUnit.HOURS)
+        .build(key -> Bucket.builder()
+            .addLimit(Bandwidth.classic(100, Refill.greedy(100, Duration.ofMinutes(1))))
+            .build());
+
+    @GetMapping("/api/data")
+    public ResponseEntity<?> getData(HttpServletRequest request) {
+        Bucket bucket = buckets.get(request.getRemoteAddr());
+        if (bucket.tryConsume(1)) {
+            return ResponseEntity.ok(data);
+        }
+        return ResponseEntity.status(429)
+            .header("Retry-After", "60")
+            .body("Too Many Requests");
+    }
+}
+```
+
+**Câu hỏi tình huống**
+
+> API bị tấn công credential stuffing — bot thử hàng nghìn username/password. Phát hiện và ngăn thế nào?
+
+*Trả lời*:
+1. **Rate limit per IP và per username** — 5 lần fail/minute
+2. **Account lockout** sau N lần fail — kèm email notify
+3. **CAPTCHA** sau vài lần fail
+4. **Anomaly detection**: Nhiều fail từ nhiều IP khác nhau → bot network → block range IP hoặc dùng WAF
+5. **Leaked password check** — kiểm tra với HaveIBeenPwned API khi user đặt mật khẩu
+
+**Câu hỏi Trick**
+
+> Rate limit theo IP có vấn đề gì với user hợp lệ?
+
+*Trả lời*: **NAT và shared IP** — nhiều user hợp lệ trong cùng corporate network share 1 IP → rate limit chung ảnh hưởng tất cả. Fix: rate limit theo **authenticated user ID** (sau khi login) thay vì IP, kết hợp IP rate limit chỉ cho unauthenticated endpoints (login, register).

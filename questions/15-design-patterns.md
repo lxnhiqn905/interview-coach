@@ -330,3 +330,110 @@ new User.Builder("Nam", "nam@email.com")
 **Trick 2**: Lombok `@Builder` annotation làm gì? Có trade-off không?
 
 *Trả lời*: Tự generate Builder class lúc compile — không cần viết tay, tiết kiệm boilerplate. Trade-off: require field không được enforce tự động (phải dùng `@Builder.Default` hoặc `@NonNull`), và nếu thêm field mới vào class thì Builder tự update nhưng code gọi Builder không bị lỗi compile dù thiếu field mới — có thể tạo object thiếu data mà không hay.
+
+---
+
+## Q7: Adapter Pattern — Tích hợp hệ thống không tương thích
+
+**Trả lời Basic** *(Phân biệt đặc điểm)*
+
+> **Adapter** là cầu nối giữa 2 interface không tương thích — như cục chuyển đổi phích cắm giữa các nước.
+
+```java
+// Interface hệ thống mới
+interface PaymentGateway {
+    PaymentResult charge(String customerId, BigDecimal amount, String currency);
+}
+
+// Legacy library với interface khác (không thể sửa)
+class StripeClient {
+    StripeCharge createCharge(StripeChargeParams params) { ... }
+}
+
+// Adapter — wrap Stripe để khớp với interface mới
+class StripePaymentAdapter implements PaymentGateway {
+    private final StripeClient stripeClient;
+
+    @Override
+    public PaymentResult charge(String customerId, BigDecimal amount, String currency) {
+        StripeChargeParams params = StripeChargeParams.builder()
+            .customer(customerId)
+            .amount(amount.multiply(BigDecimal.valueOf(100)).longValue()) // Stripe dùng cents
+            .currency(currency)
+            .build();
+        StripeCharge charge = stripeClient.createCharge(params);
+        return new PaymentResult(charge.getId(), charge.getStatus());
+    }
+}
+```
+
+**Câu hỏi tình huống**
+
+> Bạn cần tích hợp 3 payment gateway (Stripe, VNPay, MoMo) với interface khác nhau. Thiết kế thế nào?
+
+*Trả lời*: Định nghĩa `PaymentGateway` interface chuẩn của hệ thống, viết Adapter cho từng provider. Code business logic chỉ giao tiếp với `PaymentGateway` — không biết bên dưới là Stripe hay VNPay. Thêm provider mới chỉ cần viết thêm Adapter, không sửa business code.
+
+**Câu hỏi Trick**
+
+> Adapter vs Facade — khác nhau thế nào?
+
+*Trả lời*:
+- **Adapter**: Biến đổi interface **không tương thích** thành interface hệ thống đang dùng. 1-to-1 mapping
+- **Facade**: Đơn giản hóa **subsystem phức tạp** bằng cách cung cấp interface đơn giản hơn. Ẩn nhiều class/logic phức tạp sau 1 interface đơn giản
+
+---
+
+## Q8: Proxy Pattern — Kiểm soát truy cập vào object
+
+**Trả lời Basic** *(Phân biệt đặc điểm)*
+
+> Proxy là object đại diện cho object thật — intercept request trước/sau khi gửi đến real object.
+
+| Loại Proxy | Mục đích | Ví dụ |
+|---|---|---|
+| **Virtual Proxy** | Lazy loading | Không tạo object nặng đến khi cần |
+| **Protection Proxy** | Access control | Kiểm tra quyền trước khi gọi |
+| **Remote Proxy** | Local đại diện cho remote | RPC stub, REST client |
+| **Caching Proxy** | Cache kết quả | Tránh gọi DB/API nhiều lần |
+
+**Trả lời Nâng cao**
+
+```java
+// Spring AOP là Proxy Pattern
+// @Transactional, @Cacheable, @PreAuthorize đều hoạt động qua Proxy
+
+// Dynamic Proxy tự viết
+public class LoggingProxy implements UserService {
+    private final UserService target;
+
+    @Override
+    public User findById(Long id) {
+        log.info("findById called with id={}", id);
+        long start = System.currentTimeMillis();
+        try {
+            User result = target.findById(id);
+            log.info("findById completed in {}ms", System.currentTimeMillis() - start);
+            return result;
+        } catch (Exception e) {
+            log.error("findById failed", e);
+            throw e;
+        }
+    }
+}
+```
+
+**Câu hỏi tình huống**
+
+> Cần thêm logging và metrics cho tất cả service method mà không sửa từng method. Spring AOP hay Proxy trực tiếp?
+
+*Trả lời*: **Spring AOP** — AOP là Proxy Pattern automation. Viết `@Around` aspect áp dụng cho tất cả method match pointcut expression. Không cần sửa business code, không cần tạo Proxy class thủ công cho từng service. AOP là cách Spring implement `@Transactional`, `@Cacheable` — cùng nguyên lý.
+
+**Câu hỏi Trick**
+
+> Proxy Pattern và Decorator Pattern — nhìn code giống nhau, khác nhau thế nào?
+
+*Trả lời*:
+- **Proxy**: Kiểm soát **truy cập** vào object — client không nên (hoặc không cần) biết có proxy. Mục đích: access control, lazy init, logging
+- **Decorator**: Thêm **behavior mới** vào object — thường client biết đang dùng decorator. Mục đích: thêm feature động, tránh subclass explosion
+
+Ranh giới mờ trong thực tế, nhưng **intent khác nhau**: Proxy về access, Decorator về enhancement.

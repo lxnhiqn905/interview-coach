@@ -600,3 +600,58 @@ Với tính năng phụ (email, analytics) nên dùng async để không block l
 **Trick 2**: Observer Pattern và **Event-Driven Architecture** liên quan thế nào?
 
 *Trả lời*: Observer Pattern là **nền tảng lý thuyết**, Event-Driven Architecture là **áp dụng ở quy mô hệ thống**. Kafka, RabbitMQ, AWS SNS/SQS đều là Observer Pattern ở tầng distributed — publisher không biết consumer, consumer subscribe topic/queue mà không ảnh hưởng publisher. Microservices giao tiếp async qua event chính là Observer Pattern ở scale lớn.
+
+---
+
+## Q8: Review Security — Những lỗ hổng hay bị bỏ sót
+
+**Trả lời Basic** *(Checklist khi review)*
+
+| Lỗ hổng | Dấu hiệu trong code |
+|---|---|
+| **IDOR** | `findById(id)` không kiểm tra ownership |
+| **SQL Injection** | String concatenation trong query |
+| **Path Traversal** | Dùng user input làm file path |
+| **Log Sensitive Data** | Log `password`, `token`, `ssn` |
+| **Hardcoded Secret** | String chứa `password=`, `apiKey=` |
+| **Mass Assignment** | `user.updateAll(request.body)` |
+| **Insecure Deserialization** | Deserialize từ user input không validate |
+
+**Trả lời Nâng cao**
+
+```java
+// Bỏ sót IDOR — code nhìn có vẻ ổn
+public Order getOrder(Long orderId) {
+    return orderRepo.findById(orderId).orElseThrow();
+    // ❌ Ai cũng xem được order của người khác nếu đoán được ID
+}
+
+// Fix
+public Order getOrder(Long orderId, Long currentUserId) {
+    Order order = orderRepo.findById(orderId).orElseThrow();
+    if (!order.getUserId().equals(currentUserId)) throw new ForbiddenException();
+    return order;
+}
+
+// Mass Assignment bị bỏ sót
+public User updateUser(Long id, Map<String, Object> fields) {
+    User user = userRepo.findById(id).orElseThrow();
+    user.setAll(fields); // ❌ Attacker có thể set role=ADMIN, isAdmin=true...
+    return userRepo.save(user);
+}
+
+// Fix — dùng DTO rõ ràng với chỉ field được phép update
+public User updateUser(Long id, UpdateUserDto dto) { ... }
+```
+
+**Câu hỏi tình huống**
+
+> Bạn review PR của junior dev. Code trông functional và clean, nhưng endpoint `/api/invoice/{id}/download` chỉ kiểm tra user đã login chứ không kiểm tra invoice thuộc về user đó. Developer nói "auth middleware đã check rồi". Bạn xử lý thế nào?
+
+*Trả lời*: Giải thích rõ sự khác nhau giữa **Authentication** (đã login) và **Authorization** (có quyền với resource này). Auth middleware chỉ verify token, không biết resource ownership. Đây là lỗ hổng **IDOR** — bất kỳ user đã login nào đều có thể download invoice của người khác bằng cách thay đổi `id` trong URL. Request changes và suggest pattern đúng. Nếu codebase có nhiều endpoint tương tự, đề xuất review toàn bộ hoặc thêm rule vào code review checklist.
+
+**Câu hỏi Trick**
+
+> Reviewer có nên chạy SAST tool (SonarQube) thay vì review security thủ công không?
+
+*Trả lời*: SAST và manual review **bổ sung cho nhau**, không thay thế nhau. SAST tốt cho: SQL injection (pattern-based), dependency CVE, hardcoded secret. SAST kém cho: **IDOR** (cần hiểu business logic), insecure design, race condition. Manual review bắt được những gì SAST bỏ sót vì cần hiểu context. Best practice: SAST trong CI/CD pipeline, manual security review cho feature liên quan đến auth/authorization.

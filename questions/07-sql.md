@@ -499,3 +499,98 @@ WITH RECURSIVE org_chart AS (
   WHERE NOT e.id = ANY(oc.path)  -- Dừng nếu đã đi qua node này
 )
 ```
+
+---
+
+## Q7: Transaction Isolation Levels — Đọc hiểu và chọn đúng
+
+**Trả lời Basic**
+
+| Level | Dirty Read | Non-repeatable Read | Phantom Read |
+|---|---|---|---|
+| READ UNCOMMITTED | Có thể | Có thể | Có thể |
+| READ COMMITTED | Không | Có thể | Có thể |
+| REPEATABLE READ | Không | Không | Có thể |
+| SERIALIZABLE | Không | Không | Không |
+
+- **Dirty Read**: Đọc data chưa commit của transaction khác
+- **Non-repeatable Read**: Cùng query, 2 lần đọc khác nhau trong 1 transaction
+- **Phantom Read**: Query trả về số row khác nhau trong 1 transaction
+
+**Trả lời Nâng cao**
+
+> **MySQL InnoDB** mặc định **REPEATABLE READ** (dùng MVCC — snapshot đầu transaction).
+>
+> **PostgreSQL** mặc định **READ COMMITTED**.
+
+```sql
+-- Đặt isolation level
+SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+BEGIN;
+  SELECT balance FROM accounts WHERE id = 1;
+  -- Transaction khác không thể insert/update ảnh hưởng result set này
+COMMIT;
+```
+
+**Câu hỏi tình huống**
+
+> Banking app: Chuyển tiền từ account A sang B. Cần isolation level nào?
+
+*Trả lời*: **SERIALIZABLE** hoặc **REPEATABLE READ** + explicit locking (`SELECT ... FOR UPDATE`). SERIALIZABLE đảm bảo transaction chạy như thể tuần tự, loại bỏ mọi anomaly. Trong thực tế nhiều bank dùng `SELECT ... FOR UPDATE` để lock row cụ thể, tránh overhead của toàn bộ SERIALIZABLE.
+
+**Câu hỏi Trick**
+
+> `READ COMMITTED` có vấn đề gì trong banking?
+
+*Trả lời*: **Non-repeatable read** — cùng transaction đọc balance lần 1 = 1000, trong khi đó transaction khác trừ 500 và commit, đọc lần 2 = 500. Logic "kiểm tra đủ tiền rồi mới trừ" có thể race condition nếu không lock row.
+
+---
+
+## Q8: Query Optimization — EXPLAIN và Index Strategy
+
+**Trả lời Basic**
+
+```sql
+-- Xem query execution plan
+EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id = 123 AND status = 'pending';
+```
+
+| EXPLAIN output | Ý nghĩa |
+|---|---|
+| `Seq Scan` | Full table scan — cần index |
+| `Index Scan` | Dùng index — tốt |
+| `Index Only Scan` | Chỉ đọc index, không cần table — rất tốt |
+| `rows=10000` | Estimated rows — nếu khác thật nhiều → `ANALYZE` table |
+| `cost=0..1000` | Estimated cost (lower is better) |
+
+**Trả lời Nâng cao**
+
+```sql
+-- Composite index — thứ tự quan trọng
+-- Query: WHERE user_id = ? AND status = ? ORDER BY created_at DESC
+CREATE INDEX idx_orders_user_status_date
+ON orders (user_id, status, created_at DESC);
+-- Leftmost prefix: dùng được cho user_id, user_id+status, user_id+status+created_at
+-- KHÔNG dùng được cho status alone hoặc created_at alone
+
+-- Covering index — index chứa đủ column, không cần lookup table
+CREATE INDEX idx_orders_covering
+ON orders (user_id, status) INCLUDE (total_amount, created_at);
+```
+
+**Câu hỏi tình huống**
+
+> Query đang chạy 5 giây. EXPLAIN cho thấy `Seq Scan` trên table 10M rows. Bạn làm gì?
+
+*Trả lời*:
+1. Thêm index trên column trong WHERE clause
+2. Kiểm tra column có high cardinality không (index vô nghĩa trên `status` chỉ có 3 giá trị nếu data phân tán đều)
+3. Check index đã có chưa (`\d orders` trong psql, `SHOW INDEX FROM orders` trong MySQL)
+4. `ANALYZE table` để cập nhật statistics — planner có thể chọn sai plan vì statistics cũ
+5. Xem xét partial index nếu query thường filter theo condition cụ thể
+
+**Câu hỏi Trick**
+
+> Index có làm INSERT/UPDATE chậm hơn không?
+
+*Trả lời*: Có — mỗi index phải được update khi data thay đổi. Table có 10 index → mỗi INSERT update 10 index structure. **Index là trade-off**: tăng read speed, giảm write speed. Không đánh index cho mọi column — chỉ đánh khi có query thực tế cần và benchmark confirm improvement.

@@ -363,3 +363,228 @@ Gợi ý trả lời:
 → `@MessagePattern`: Caller **chờ** response → dùng khi cần kết quả để xử lý tiếp (query data, validate)
 → `@EventPattern`: Fire-and-forget → dùng khi không cần response (notification, audit log, trigger side effect)
 → Dùng Event Pattern nhiều hơn trong microservices để giảm coupling — service không phụ thuộc vào availability của service khác
+
+---
+
+## Q5: Testing trong NestJS — Unit vs E2E
+
+### Trả lời Basic
+
+| Loại | Tool | Test gì |
+|---|---|---|
+| Unit test | Jest | Service/Guard/Pipe logic riêng lẻ |
+| Integration | Jest + TestingModule | Module với DI thật |
+| E2E | Jest + Supertest | HTTP endpoint, full flow |
+
+### Trả lời Nâng cao
+
+```typescript
+// Unit test — mock dependencies
+describe('UsersService', () => {
+  let service: UsersService;
+  let userRepo: jest.Mocked<Repository<User>>;
+
+  beforeEach(async () => {
+    const module = await Test.createTestingModule({
+      providers: [
+        UsersService,
+        {
+          provide: getRepositoryToken(User),
+          useValue: { findOne: jest.fn(), save: jest.fn() },
+        },
+      ],
+    }).compile();
+
+    service = module.get(UsersService);
+    userRepo = module.get(getRepositoryToken(User));
+  });
+
+  it('should find user by email', async () => {
+    userRepo.findOne.mockResolvedValue({ id: '1', email: 'test@test.com' });
+    const user = await service.findByEmail('test@test.com');
+    expect(user.email).toBe('test@test.com');
+  });
+});
+```
+
+**E2E test:**
+
+```typescript
+describe('Users (e2e)', () => {
+  let app: INestApplication;
+
+  beforeAll(async () => {
+    const module = await Test.createTestingModule({
+      imports: [AppModule], // Real module
+    }).compile();
+    app = module.createNestApplication();
+    app.useGlobalPipes(new ValidationPipe());
+    await app.init();
+  });
+
+  it('POST /users', () => {
+    return request(app.getHttpServer())
+      .post('/users')
+      .send({ email: 'test@test.com', password: 'password123' })
+      .expect(201);
+  });
+});
+```
+
+### Câu hỏi Trick
+
+**Trick:** E2E test nên dùng DB thật hay mock?
+
+→ **DB thật** (test database) — vì TypeORM, migrations, và query behavior khác nhau giữa mock và thật. Dùng **Docker Compose** chạy Postgres test, reset DB trước mỗi test suite. Mock DB chỉ hợp lý cho unit test service logic.
+
+---
+
+## Q6: Configuration Management trong NestJS
+
+### Trả lời Basic
+
+```typescript
+// app.module.ts
+@Module({
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,       // Không cần import lại trong từng module
+      envFilePath: `.env.${process.env.NODE_ENV}`,
+      validationSchema: Joi.object({
+        PORT: Joi.number().default(3000),
+        DB_HOST: Joi.string().required(),
+        JWT_SECRET: Joi.string().min(32).required(),
+      }),
+    }),
+  ],
+})
+export class AppModule {}
+
+// Dùng trong service
+@Injectable()
+export class AppService {
+  constructor(private configService: ConfigService) {}
+
+  getPort() {
+    return this.configService.get<number>('PORT');
+  }
+}
+```
+
+### Trả lời Nâng cao
+
+**Typed config với namespace:**
+
+```typescript
+// config/database.config.ts
+export const databaseConfig = registerAs('database', () => ({
+  host: process.env.DB_HOST,
+  port: parseInt(process.env.DB_PORT, 10) || 5432,
+  name: process.env.DB_NAME,
+}));
+
+// Inject typed
+@InjectableConfig('database') private dbConfig: ConfigType<typeof databaseConfig>
+// dbConfig.host, dbConfig.port — type-safe
+```
+
+### Câu hỏi Trick
+
+**Trick:** `.env` file có nên commit vào git không? Quản lý secret thế nào trong team?
+
+→ **Không commit** `.env` production vào git. Commit `.env.example` với placeholder. Trong production: inject qua K8s Secret, AWS Secrets Manager, hoặc Vault. Trong dev team: dùng tool như **dotenv-vault** hoặc chia sẻ qua password manager.
+
+---
+
+## Q7: Swagger/OpenAPI Documentation
+
+### Trả lời Basic
+
+```typescript
+// main.ts
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+
+  const config = new DocumentBuilder()
+    .setTitle('API Docs')
+    .setVersion('1.0')
+    .addBearerAuth()
+    .build();
+
+  const document = SwaggerModule.createDocument(app, config);
+  SwaggerModule.setup('api/docs', app, document);
+
+  await app.listen(3000);
+}
+```
+
+**Annotate DTO và Controller:**
+
+```typescript
+export class CreateUserDto {
+  @ApiProperty({ example: 'user@example.com', description: 'User email' })
+  @IsEmail()
+  email: string;
+}
+
+@ApiOperation({ summary: 'Create new user' })
+@ApiResponse({ status: 201, type: UserDto })
+@ApiResponse({ status: 400, description: 'Validation failed' })
+@Post()
+create(@Body() dto: CreateUserDto): Promise<UserDto> { ... }
+```
+
+### Câu hỏi Trick
+
+**Trick:** Swagger UI nên expose trên production không?
+
+→ **Không** — hoặc bảo vệ bằng authentication, chỉ accessible từ internal network. Swagger UI tiết lộ toàn bộ API structure, request/response format → tăng attack surface. Thường disable trên production bằng cách check `NODE_ENV`.
+
+---
+
+## Q8: Graceful Shutdown trong NestJS
+
+### Trả lời Basic
+
+```typescript
+// main.ts
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  app.enableShutdownHooks(); // Lắng nghe SIGTERM, SIGINT
+
+  await app.listen(3000);
+}
+
+// Module cleanup
+@Injectable()
+export class DatabaseService implements OnModuleDestroy {
+  async onModuleDestroy() {
+    await this.connection.close(); // Đóng DB connection khi shutdown
+  }
+}
+```
+
+### Trả lời Nâng cao
+
+> **Graceful shutdown flow khi K8s gửi SIGTERM:**
+> 1. `SIGTERM` nhận → NestJS stop nhận request mới
+> 2. Đợi in-flight request hoàn thành (grace period)
+> 3. `OnModuleDestroy` hooks chạy — đóng DB, message queue connection
+> 4. Process exit
+
+```typescript
+// Timeout cho graceful shutdown
+app.enableShutdownHooks();
+
+const server = app.getHttpServer();
+server.keepAliveTimeout = 65000; // > K8s terminationGracePeriodSeconds (60s)
+
+// Trong K8s deployment
+// terminationGracePeriodSeconds: 60
+```
+
+### Câu hỏi Trick
+
+**Trick:** Không có graceful shutdown, điều gì xảy ra khi K8s rolling update?
+
+→ K8s gửi SIGTERM và routing stop traffic đến pod. Nếu app không handle SIGTERM → **process bị kill ngay** → in-flight request bị drop → user thấy error. Với graceful shutdown: app hoàn thành request hiện tại trước khi tắt → **zero-downtime deployment**.

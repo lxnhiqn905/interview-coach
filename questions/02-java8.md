@@ -109,3 +109,243 @@ return userRepo.findById(id)
 // Chỉ gọi fetchDefault() khi không tìm thấy user
 .orElseGet(() -> fetchDefaultUser())
 ```
+
+---
+
+## Q3: Lambda và Functional Interface — Dùng đúng
+
+**Trả lời Basic** *(Phân biệt đặc điểm)*
+
+| Functional Interface | Method | Dùng khi |
+|---|---|---|
+| `Predicate<T>` | `test(T)` → boolean | Filter, kiểm tra điều kiện |
+| `Function<T,R>` | `apply(T)` → R | Transform, map |
+| `Consumer<T>` | `accept(T)` → void | Side effect (print, save) |
+| `Supplier<T>` | `get()` → T | Lazy creation, factory |
+| `BiFunction<T,U,R>` | `apply(T,U)` → R | 2 input, 1 output |
+
+**Trả lời Nâng cao**
+
+```java
+// Predicate — filter
+Predicate<String> isLong = s -> s.length() > 5;
+Predicate<String> startsWithA = s -> s.startsWith("A");
+
+// Combine predicates
+list.stream().filter(isLong.and(startsWithA)).collect(toList());
+
+// Function — transform
+Function<String, Integer> toLength = String::length;
+Function<Integer, String> toStr = i -> "Length: " + i;
+
+// Compose: f.andThen(g) = g(f(x))
+Function<String, String> combined = toLength.andThen(toStr);
+combined.apply("hello"); // "Length: 5"
+```
+
+**Câu hỏi Trick**
+
+> `@FunctionalInterface` annotation có bắt buộc không?
+
+*Trả lời*: Không — nhưng **nên dùng**. Annotation này yêu cầu compiler kiểm tra interface chỉ có đúng 1 abstract method. Nếu vô tình thêm method thứ 2, sẽ bị compile error thay vì lambda bị break silently.
+
+---
+
+## Q4: Method Reference — 4 loại và khi nào dùng
+
+**Trả lời Basic**
+
+| Loại | Syntax | Tương đương lambda |
+|---|---|---|
+| Static method | `ClassName::staticMethod` | `x -> ClassName.staticMethod(x)` |
+| Instance method (object cụ thể) | `instance::method` | `x -> instance.method(x)` |
+| Instance method (type) | `ClassName::instanceMethod` | `x -> x.method()` |
+| Constructor | `ClassName::new` | `x -> new ClassName(x)` |
+
+**Trả lời Nâng cao**
+
+```java
+List<String> names = List.of("Alice", "Bob", "Charlie");
+
+// Static method reference
+names.stream().map(String::valueOf).collect(toList());
+
+// Instance method trên type — method gọi trên chính element
+names.stream().map(String::toUpperCase).collect(toList()); // x -> x.toUpperCase()
+
+// Instance method trên object cụ thể
+PrintStream printer = System.out;
+names.forEach(printer::println); // x -> printer.println(x)
+
+// Constructor reference
+names.stream().map(StringBuilder::new).collect(toList()); // x -> new StringBuilder(x)
+```
+
+**Câu hỏi Trick**
+
+> `System.out::println` là loại method reference nào?
+
+*Trả lời*: **Instance method reference trên object cụ thể** (`System.out` là instance của `PrintStream`). Tương đương `x -> System.out.println(x)`.
+
+---
+
+## Q5: Date/Time API (Java 8) — LocalDate, LocalDateTime, ZonedDateTime
+
+**Trả lời Basic**
+
+| Class | Dùng khi |
+|---|---|
+| `LocalDate` | Chỉ cần ngày (birthday, due date) |
+| `LocalTime` | Chỉ cần giờ (business hours) |
+| `LocalDateTime` | Ngày + giờ, không cần timezone |
+| `ZonedDateTime` | Cần timezone (event scheduling, log) |
+| `Instant` | Machine timestamp (UTC epoch) |
+| `Duration` | Khoảng thời gian tính theo giây/nano |
+| `Period` | Khoảng thời gian tính theo ngày/tháng/năm |
+
+**Trả lời Nâng cao**
+
+```java
+// Immutable — mọi operation trả về object mới
+LocalDate today = LocalDate.now();
+LocalDate nextWeek = today.plusDays(7);  // today không đổi
+
+// Parse / format
+LocalDate date = LocalDate.parse("2024-01-15");
+String formatted = date.format(DateTimeFormatter.ofPattern("dd/MM/yyyy"));
+
+// Timezone — luôn dùng ZonedDateTime khi lưu/hiển thị
+ZonedDateTime vietnamTime = ZonedDateTime.now(ZoneId.of("Asia/Ho_Chi_Minh"));
+ZonedDateTime utcTime = vietnamTime.withZoneSameInstant(ZoneOffset.UTC);
+
+// Khoảng cách
+long days = ChronoUnit.DAYS.between(LocalDate.of(2024, 1, 1), today);
+```
+
+**Câu hỏi Trick**
+
+> `LocalDateTime` vs `ZonedDateTime` — khi lưu vào DB nên dùng cái nào?
+
+*Trả lời*: **`Instant` hoặc `ZonedDateTime`** — lưu UTC. `LocalDateTime` không có timezone info → khi server đổi timezone hoặc app deploy ở nhiều region, data bị interpret sai. Best practice: lưu UTC trong DB, convert sang local timezone khi hiển thị cho user.
+
+---
+
+## Q6: `var` (Local Variable Type Inference) — Java 10
+
+**Trả lời Basic**
+
+`var` cho phép compiler tự suy ra kiểu dữ liệu của local variable — giảm boilerplate mà không mất type safety.
+
+```java
+// Trước Java 10
+Map<String, List<Integer>> map = new HashMap<String, List<Integer>>();
+
+// Với var
+var map = new HashMap<String, List<Integer>>();
+
+// Iterator
+for (var entry : map.entrySet()) {
+    System.out.println(entry.getKey() + ": " + entry.getValue());
+}
+```
+
+**Trả lời Nâng cao**
+
+> `var` là **compile-time feature** — không phải dynamic typing như Python/JavaScript. Bytecode vẫn có kiểu cụ thể, compiler chỉ giúp bạn không phải viết lại.
+
+**Khi KHÔNG dùng var:**
+```java
+// Sai — không rõ type là gì
+var result = service.process(data);
+
+// Đúng — khi type rõ ràng từ right-hand side
+var users = new ArrayList<User>();
+var count = 0;
+```
+
+**Câu hỏi Trick**
+
+> `var` có dùng được cho field, parameter, return type không?
+
+*Trả lời*: Không — `var` chỉ dùng được cho **local variable**. Không dùng được cho class fields, method parameters, return types, lambda parameters (trừ một số trường hợp trong Java 11+). Lý do: compiler cần đủ context tại điểm khai báo để suy ra type.
+
+---
+
+## Q7: Stream Collectors — collect() nâng cao
+
+**Trả lời Basic**
+
+```java
+// Nhóm theo field
+Map<String, List<User>> byCity = users.stream()
+    .collect(Collectors.groupingBy(User::getCity));
+
+// Đếm theo nhóm
+Map<String, Long> countByCity = users.stream()
+    .collect(Collectors.groupingBy(User::getCity, Collectors.counting()));
+
+// Partition (2 nhóm: true/false)
+Map<Boolean, List<User>> partitioned = users.stream()
+    .collect(Collectors.partitioningBy(u -> u.getAge() >= 18));
+
+// Join string
+String names = users.stream()
+    .map(User::getName)
+    .collect(Collectors.joining(", ", "[", "]")); // [Alice, Bob, Charlie]
+```
+
+**Câu hỏi Trick**
+
+> `toList()` (Java 16+) vs `collect(Collectors.toList())` — khác nhau gì?
+
+*Trả lời*: `toList()` trả về **unmodifiable list**, `Collectors.toList()` trả về mutable list (thường là `ArrayList`). Từ Java 10 có `Collectors.toUnmodifiableList()`. Nếu cần add/remove sau khi collect, dùng `Collectors.toList()` hoặc `Collectors.toCollection(ArrayList::new)`.
+
+---
+
+## Q8: Record (Java 16) và Sealed Class (Java 17) — Dùng khi nào?
+
+**Trả lời Basic**
+
+**Record** — immutable data carrier, auto-generate `equals`, `hashCode`, `toString`, getters:
+
+```java
+// Thay vì class với 20 dòng boilerplate
+public record Point(int x, int y) {}
+
+Point p = new Point(3, 4);
+p.x();      // getter
+p.equals(new Point(3, 4));  // true
+```
+
+**Sealed Class** — giới hạn class nào được kế thừa:
+
+```java
+sealed interface Shape permits Circle, Rectangle, Triangle {}
+
+record Circle(double radius) implements Shape {}
+record Rectangle(double width, double height) implements Shape {}
+```
+
+**Trả lời Nâng cao**
+
+> Kết hợp Sealed + Record + Pattern Matching tạo ra algebraic data types:
+
+```java
+double area(Shape shape) {
+    return switch (shape) {
+        case Circle c    -> Math.PI * c.radius() * c.radius();
+        case Rectangle r -> r.width() * r.height();
+        case Triangle t  -> 0.5 * t.base() * t.height();
+        // Compiler biết đã cover hết cases — không cần default
+    };
+}
+```
+
+**Câu hỏi Trick**
+
+> Record có thể có custom method không? Có thể mutable không?
+
+*Trả lời*: Có thể có **custom method** (instance method, static method, compact constructor). Nhưng fields luôn **final và private** — không thể mutable. Nếu cần "update" một field, phải tạo record mới:
+```java
+Point moved = new Point(p.x() + 1, p.y()); // p không đổi
+```

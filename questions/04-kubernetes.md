@@ -136,3 +136,368 @@ Best practices thực tế:
 **Trick 2**: Secret có bị log ra không nếu app bị crash?
 
 *Trả lời*: Có thể — nếu app đọc Secret vào biến và log biến đó ra (vô tình hoặc cố ý). Cần dùng framework hỗ trợ masking sensitive values trong log (Spring Boot Actuator, Log4j pattern), và code review để tránh log credential.
+
+---
+
+## Q4: Ingress là gì? Ingress vs Service NodePort/LoadBalancer
+
+**Trả lời Basic** *(Phân biệt đặc điểm)*
+
+| | NodePort | LoadBalancer | Ingress |
+|---|---|---|---|
+| Layer | L4 (TCP) | L4 (TCP) | L7 (HTTP/HTTPS) |
+| Routing | Port-based | IP-based | Host/Path-based |
+| Cloud cost | Không cần LB | 1 LB per Service | 1 LB cho nhiều Service |
+| TLS termination | Không | Có thể | Có (tại Ingress) |
+| Use case | Dev/testing | Single service expose | Multi-service, routing rules |
+
+**Trả lời Nâng cao**
+
+> Ingress là **L7 reverse proxy** chạy trong cluster. Nó nhận traffic từ 1 LoadBalancer duy nhất rồi route vào đúng Service dựa trên **host** hoặc **path**.
+>
+> Không có Ingress → 10 service cần 10 LoadBalancer → chi phí cao. Với Ingress → 1 LoadBalancer duy nhất, route theo rule.
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - host: api.example.com
+    http:
+      paths:
+      - path: /users
+        pathType: Prefix
+        backend:
+          service:
+            name: user-service
+            port:
+              number: 80
+      - path: /orders
+        pathType: Prefix
+        backend:
+          service:
+            name: order-service
+            port:
+              number: 80
+```
+
+**Câu hỏi tình huống**
+
+> Bạn có 5 microservices, mỗi cái expose HTTP. Khách hàng truy cập qua domain `api.example.com`. Làm thế nào thiết kế traffic routing?
+
+*Trả lời*: Dùng **1 Ingress** với path-based routing (`/users` → user-service, `/orders` → order-service...) hoặc host-based routing nếu mỗi service có subdomain riêng. Deploy **nginx-ingress-controller** hoặc **traefik**, chỉ cần 1 cloud LoadBalancer trỏ vào Ingress.
+
+**Câu hỏi Trick**
+
+> Ingress resource tạo xong nhưng không hoạt động. Kiểm tra gì đầu tiên?
+
+*Trả lời*: Kiểm tra **Ingress Controller đã được deploy chưa** — Ingress resource chỉ là config, phải có controller (nginx, traefik, HAProxy...) để xử lý. Tiếp theo check `kubectl describe ingress` để xem events, và kiểm tra annotation đúng với controller đang dùng.
+
+---
+
+## Q5: Ingress TLS — Cấu hình HTTPS như thế nào?
+
+**Trả lời Basic**
+
+TLS termination tại Ingress: client kết nối HTTPS đến Ingress, Ingress decrypt rồi forward HTTP vào các Service bên trong.
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-ingress
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  tls:
+  - hosts:
+    - api.example.com
+    secretName: api-tls-secret   # Secret chứa cert + private key
+  rules:
+  - host: api.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: api-service
+            port:
+              number: 80
+```
+
+**Trả lời Nâng cao**
+
+> Trong production dùng **cert-manager** để tự động cấp và renew certificate từ Let's Encrypt:
+
+```yaml
+# ClusterIssuer
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: admin@example.com
+    privateKeySecretRef:
+      name: letsencrypt-prod
+    solvers:
+    - http01:
+        ingress:
+          class: nginx
+```
+
+> cert-manager tự động tạo Secret `api-tls-secret` chứa certificate, renew trước khi hết hạn 30 ngày.
+
+**Câu hỏi Trick**
+
+> TLS termination tại Ingress — traffic từ Ingress đến Service có được mã hóa không?
+
+*Trả lời*: **Không** — đây là **TLS termination**, Ingress decrypt rồi gửi HTTP plaintext vào cluster. Trong môi trường zero-trust hoặc compliance requirements, cần **TLS passthrough** (Ingress không decrypt, forward thẳng TCP đến service) hoặc **mTLS** (mutual TLS) giữa các service thông qua service mesh như Istio.
+
+---
+
+## Q6: Kubernetes Gateway API — Ingress có gì chưa đủ?
+
+**Trả lời Basic**
+
+| | Ingress | Gateway API |
+|---|---|---|
+| API maturity | Stable (nhưng limited) | GA từ K8s 1.28 |
+| Tách biệt role | Không — dev và infra dùng chung | Có — `GatewayClass` (infra), `Gateway` (ops), `HTTPRoute` (dev) |
+| Traffic splitting | Không native | Có (canary, A/B testing) |
+| Header matching | Qua annotation (controller-specific) | Native trong spec |
+| TCP/UDP routing | Không | Có (`TCPRoute`, `UDPRoute`) |
+
+**Trả lời Nâng cao**
+
+> Gateway API giải quyết 3 vấn đề lớn của Ingress:
+>
+> 1. **Annotation hell** — mỗi Ingress controller dùng annotation khác nhau, không portable
+> 2. **Không tách role** — dev và cluster admin phải sửa cùng resource
+> 3. **Chỉ support HTTP** — không có cách chuẩn cho TCP, gRPC, WebSocket
+
+```yaml
+# GatewayClass — do cluster admin quản lý
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: nginx
+spec:
+  controllerName: k8s.nginx.org/nginx-gateway-controller
+
+---
+# Gateway — do platform team quản lý
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: prod-gateway
+  namespace: infra
+spec:
+  gatewayClassName: nginx
+  listeners:
+  - name: https
+    protocol: HTTPS
+    port: 443
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - name: prod-tls-secret
+
+---
+# HTTPRoute — do dev team quản lý, namespace riêng
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: user-route
+  namespace: app
+spec:
+  parentRefs:
+  - name: prod-gateway
+    namespace: infra
+  hostnames:
+  - "api.example.com"
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /users
+    backendRefs:
+    - name: user-service
+      port: 80
+```
+
+**Câu hỏi Trick**
+
+> Dự án đang dùng nginx Ingress, có nên migrate sang Gateway API không?
+
+*Trả lời*: **Nên lên kế hoạch migrate** nếu cần traffic splitting, header-based routing, hoặc tách role rõ ràng. Gateway API đã GA và các controller lớn (nginx, Istio, Traefik) đã support. Tuy nhiên không cần migrate gấp nếu Ingress đang hoạt động tốt — Ingress sẽ không bị remove trong tương lai gần.
+
+---
+
+## Q7: Gateway với service yêu cầu SSL — Xử lý thế nào?
+
+**Trả lời Basic**
+
+Có 3 mode TLS trong Gateway API:
+
+| Mode | Mô tả | Dùng khi |
+|---|---|---|
+| `Terminate` | Gateway decrypt TLS, forward HTTP vào service | Service không support TLS, muốn tập trung quản lý cert |
+| `Passthrough` | Gateway forward thẳng TLS đến service, không decrypt | Service tự quản lý cert (mTLS, internal PKI) |
+| `mTLS` (qua service mesh) | Client và server đều xác thực nhau | Zero-trust, compliance |
+
+**Trả lời Nâng cao**
+
+> **Tình huống: Service yêu cầu client phải kết nối bằng SSL** (ví dụ database, legacy internal service, hoặc compliance requirement)
+
+**Option 1 — TLS Passthrough** (service tự terminate):
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: prod-gateway
+spec:
+  gatewayClassName: nginx
+  listeners:
+  - name: tls-passthrough
+    protocol: TLS
+    port: 443
+    tls:
+      mode: Passthrough   # Gateway không decrypt
+---
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TLSRoute
+metadata:
+  name: db-route
+spec:
+  parentRefs:
+  - name: prod-gateway
+  rules:
+  - backendRefs:
+    - name: postgres-service
+      port: 5432   # Service tự handle TLS
+```
+
+**Option 2 — TLS Terminate tại Gateway + TLS lại đến service (Re-encrypt)**:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+spec:
+  listeners:
+  - name: https
+    protocol: HTTPS
+    port: 443
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - name: external-tls-cert   # cert cho client bên ngoài
+
+---
+# Backend service cũng expose HTTPS
+# HTTPRoute trỏ đến port 8443 của service
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+spec:
+  rules:
+  - backendRefs:
+    - name: secure-service
+      port: 8443   # service tự có internal TLS cert
+```
+
+**Option 3 — mTLS qua Istio** (enterprise grade):
+
+```yaml
+# PeerAuthentication — bắt buộc mTLS giữa các service
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: production
+spec:
+  mtls:
+    mode: STRICT   # Từ chối non-mTLS traffic hoàn toàn
+```
+
+> Với Istio, mỗi pod có **sidecar proxy (Envoy)** tự động handle mTLS — service không cần thay đổi code, cert được quản lý và rotate tự động bởi Istio CA.
+
+**Câu hỏi tình huống**
+
+> Bạn có một legacy internal service bắt buộc phải nhận HTTPS, không thể sửa code. Gateway đang dùng TLS Terminate. Làm thế nào vừa expose HTTPS ra ngoài vừa đảm bảo traffic đến service cũng được mã hóa?
+
+*Trả lời*: Dùng **Re-encrypt** pattern:
+1. Gateway nhận HTTPS từ client → terminate cert ngoài
+2. Gateway forward HTTPS đến service với cert nội bộ (internal CA)
+3. Deploy **cert-manager** để cấp internal cert cho service, mount vào pod
+4. HTTPRoute trỏ `backendRefs` vào port HTTPS của service
+
+Nếu cần automation hoàn toàn và scale lớn → migrate sang **Istio mTLS STRICT** mode thay vì manage cert thủ công.
+
+**Câu hỏi Trick**
+
+> TLS Passthrough và TLS Terminate — cái nào cho phép Gateway inspect HTTP headers?
+
+*Trả lời*: **Chỉ Terminate** — vì Gateway decrypt được payload. Passthrough forward encrypted bytes thẳng đến service, Gateway không nhìn thấy nội dung → không thể route theo header, path, hay làm rate limiting ở L7. Đây là trade-off giữa security (passthrough) và observability/routing power (terminate).
+
+---
+
+## Q8: Master Node die thì Cluster như thế nào? Nên cài bao nhiêu Master Node?
+
+**Trả lời Basic**
+
+Master Node (Control Plane) gồm 4 thành phần chính:
+
+| Component | Vai trò | Khi die |
+|---|---|---|
+| `kube-apiserver` | Cửa ngõ duy nhất của cluster | Không `kubectl` được, không deploy/scale được |
+| `etcd` | Database lưu toàn bộ state cluster | Mất etcd = mất toàn bộ state |
+| `kube-scheduler` | Giao Pod cho Worker Node | Pod mới không được schedule |
+| `kube-controller-manager` | Reconcile loop (ReplicaSet, Node...) | Pod chết không được tự heal |
+
+> **Workload đang chạy vẫn tiếp tục chạy bình thường** — Worker Nodes độc lập, không phụ thuộc Control Plane để serve traffic. Nhưng cluster "mù" hoàn toàn: không thể can thiệp, không tự heal, không deploy mới.
+
+**Trả lời Nâng cao** *(Nên cài bao nhiêu Master Node?)*
+
+> Câu trả lời là **số lẻ: 3 hoặc 5** — do cơ chế **Raft consensus** của etcd.
+
+etcd yêu cầu **quorum** (đa số) để đồng ý một write operation:
+
+| Số Master | Quorum cần | Chịu được mất tối đa |
+|---|---|---|
+| 1 | 1 | 0 (SPOF) |
+| 2 | 2 | 0 (không an toàn hơn 1) |
+| **3** | **2** | **1 node** |
+| 4 | 3 | 1 node (không tốt hơn 3) |
+| **5** | **3** | **2 node** |
+
+> **Tại sao số lẻ?** — Số chẵn không tăng fault tolerance nhưng tăng chi phí. 4 node chịu được mất 1 (quorum = 3), giống hệt 3 node. Dùng 4 node chỉ tốn thêm tiền, không thêm giá trị.
+
+**Khuyến nghị thực tế:**
+- **Dev / staging**: 1 Master — chấp nhận downtime, tiết kiệm chi phí
+- **Production nhỏ/vừa**: **3 Masters** — đủ HA, chịu mất 1 node
+- **Production lớn / mission-critical**: **5 Masters** — chịu mất 2 node đồng thời, dùng khi cluster rất lớn hoặc yêu cầu SLA cao
+
+**Câu hỏi tình huống**
+
+> Cluster đang có 3 Master Nodes. Đột ngột 2 node cùng die (network partition, hardware failure). Điều gì xảy ra?
+
+*Trả lời*: etcd mất quorum (cần 2, chỉ còn 1) → **etcd từ chối mọi write** → `kube-apiserver` không thể commit state mới → cluster bị **read-only**. Workload đang chạy vẫn sống, nhưng không thể deploy, scale, hay tự heal. Recovery cần restore etcd từ snapshot hoặc bring back ít nhất 1 node trong 2 node đã die.
+
+> Đây là lý do production quan trọng nên dùng **5 Masters** — chịu được mất 2 node đồng thời mà cluster vẫn hoạt động bình thường.
+
+**Câu hỏi Trick**
+
+> etcd nên đặt trên Master Node hay máy riêng?
+
+*Trả lời*: Có 2 topology:
+- **Stacked etcd** (etcd trên cùng Master Node) — đơn giản, tiết kiệm máy, nhưng nếu Master Node die thì mất cả etcd node
+- **External etcd** (etcd cluster riêng biệt) — phức tạp hơn, tốn máy hơn, nhưng Control Plane và etcd scale độc lập, fault domain tách biệt
+
+Production với SLA cao → **External etcd**. Hầu hết production bình thường → **Stacked etcd với 3 Masters** là đủ.

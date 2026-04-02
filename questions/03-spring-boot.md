@@ -141,3 +141,218 @@ Async giảm coupling, tăng resilience — service A không bị ảnh hưởng
 *Trả lời*: Không dùng 2PC (Two-Phase Commit) — phức tạp và làm giảm availability. Thay bằng **Saga Pattern**:
 - **Choreography**: Mỗi service emit event, service khác lắng nghe và phản ứng
 - **Orchestration**: Một orchestrator điều phối các bước, rollback bằng compensating transactions
+
+---
+
+## Q4: Spring Security — Authentication và Authorization
+
+**Trả lời Basic**
+
+| Khái niệm | Ý nghĩa |
+|---|---|
+| **Authentication** | Xác định "bạn là ai?" (login) |
+| **Authorization** | Xác định "bạn được làm gì?" (permission) |
+| **SecurityContext** | Lưu thông tin user hiện tại theo thread |
+| **Filter Chain** | Chuỗi filter xử lý security trước khi vào controller |
+
+**Trả lời Nâng cao**
+
+```java
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
+    @Bean
+    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        return http
+            .csrf(csrf -> csrf.disable())           // Disable nếu dùng JWT (stateless)
+            .sessionManagement(s -> s.sessionCreationPolicy(STATELESS))
+            .authorizeHttpRequests(auth -> auth
+                .requestMatchers("/api/public/**").permitAll()
+                .requestMatchers("/api/admin/**").hasRole("ADMIN")
+                .anyRequest().authenticated()
+            )
+            .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
+            .build();
+    }
+}
+```
+
+**Câu hỏi Trick**
+
+> Method Security (`@PreAuthorize`) vs URL Security — khác nhau thế nào? Dùng cả hai cùng lúc có được không?
+
+*Trả lời*: URL Security bảo vệ ở tầng HTTP request. Method Security bảo vệ ở tầng service method (kể cả khi gọi từ internal code). **Nên dùng cả hai**: URL security như vòng ngoài, method security như vòng trong. Bật method security bằng `@EnableMethodSecurity`.
+
+---
+
+## Q5: Spring Cache — `@Cacheable`, `@CacheEvict`
+
+**Trả lời Basic**
+
+```java
+@Service
+public class ProductService {
+
+    @Cacheable(value = "products", key = "#id")
+    public Product findById(Long id) {
+        return productRepo.findById(id).orElseThrow(); // Chỉ gọi khi cache miss
+    }
+
+    @CacheEvict(value = "products", key = "#product.id")
+    public Product update(Product product) {
+        return productRepo.save(product); // Xóa cache sau khi update
+    }
+
+    @CachePut(value = "products", key = "#result.id")
+    public Product create(Product product) {
+        return productRepo.save(product); // Update cache với giá trị mới
+    }
+}
+```
+
+**Trả lời Nâng cao**
+
+> Spring Cache abstraction hỗ trợ nhiều backend: **ConcurrentHashMap** (mặc định, in-memory), **Redis** (distributed), **Caffeine** (high-performance in-memory).
+
+```yaml
+spring:
+  cache:
+    type: redis
+  redis:
+    host: localhost
+    port: 6379
+```
+
+**Câu hỏi Trick**
+
+> `@Cacheable` gọi từ cùng class thì cache có hoạt động không?
+
+*Trả lời*: **Không** — giống `@Transactional`, Spring Cache dùng AOP proxy. Gọi nội bộ bypass proxy → cache không được kiểm tra. Fix tương tự: inject self hoặc chuyển ra class khác.
+
+---
+
+## Q6: Spring Boot Actuator — Monitoring và Management
+
+**Trả lời Basic**
+
+```yaml
+# application.yml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+```
+
+| Endpoint | Thông tin |
+|---|---|
+| `/actuator/health` | Health status của app và dependencies |
+| `/actuator/metrics` | JVM, HTTP, DB metrics |
+| `/actuator/prometheus` | Metrics format cho Prometheus scrape |
+| `/actuator/info` | App version, build info |
+| `/actuator/env` | Environment properties (sensitive!) |
+| `/actuator/loggers` | Đổi log level runtime |
+
+**Câu hỏi Trick**
+
+> Actuator `/actuator/env` có thể expose secret không? Cách bảo vệ?
+
+*Trả lời*: Có — hiển thị tất cả environment properties, có thể lộ DB password nếu không cẩn thận. Bảo vệ:
+1. Chỉ expose endpoint cần thiết (không expose `env`, `beans` trên production)
+2. Đặt Actuator trên port riêng (`management.server.port=8081`) và block từ public
+3. Dùng Spring Security để protect actuator endpoints
+
+---
+
+## Q7: Circuit Breaker với Resilience4j
+
+**Trả lời Basic**
+
+Circuit Breaker ngăn cascade failure khi một service phụ thuộc bị lỗi.
+
+| State | Hành vi |
+|---|---|
+| **Closed** | Request đi qua bình thường |
+| **Open** | Block request, trả về fallback ngay (không gọi service lỗi) |
+| **Half-Open** | Thử vài request, nếu pass → Closed, nếu fail → Open |
+
+```java
+@CircuitBreaker(name = "paymentService", fallbackMethod = "paymentFallback")
+public PaymentResult processPayment(PaymentRequest request) {
+    return paymentClient.process(request); // Gọi external service
+}
+
+public PaymentResult paymentFallback(PaymentRequest request, Exception ex) {
+    // Fallback khi circuit open
+    return PaymentResult.pending("Payment queued for retry");
+}
+```
+
+**Trả lời Nâng cao**
+
+```yaml
+resilience4j:
+  circuitbreaker:
+    instances:
+      paymentService:
+        failure-rate-threshold: 50        # >50% fail → Open
+        wait-duration-in-open-state: 30s  # Chờ 30s trước khi thử Half-Open
+        permitted-number-of-calls-in-half-open-state: 5
+        sliding-window-size: 10
+```
+
+**Câu hỏi Trick**
+
+> Circuit Breaker vs Retry — dùng cái nào trước?
+
+*Trả lời*: **Retry trước, Circuit Breaker bên ngoài**. Thứ tự: `CircuitBreaker(Retry(request))`. Retry xử lý transient failure (network blip). Nếu retry nhiều lần vẫn fail → Circuit Breaker open, ngăn tiếp tục gây tải lên service đang lỗi.
+
+---
+
+## Q8: Spring Events — Giao tiếp nội bộ trong ứng dụng
+
+**Trả lời Basic**
+
+Spring Events cho phép các component giao tiếp **loose coupling** thông qua event, không cần inject trực tiếp.
+
+```java
+// Event
+public record UserRegisteredEvent(String userId, String email) {}
+
+// Publisher
+@Service
+public class UserService {
+    private final ApplicationEventPublisher publisher;
+
+    public User register(RegisterRequest req) {
+        User user = userRepo.save(new User(req));
+        publisher.publishEvent(new UserRegisteredEvent(user.getId(), user.getEmail()));
+        return user;
+    }
+}
+
+// Listener
+@Component
+public class EmailNotificationListener {
+    @EventListener
+    @Async  // Xử lý async, không block register flow
+    public void onUserRegistered(UserRegisteredEvent event) {
+        emailService.sendWelcome(event.email());
+    }
+}
+```
+
+**Câu hỏi tình huống**
+
+> `UserService` cần notify 5 component khác (Email, Audit, Analytics, Notification, Recommendation) sau khi user register. Inject 5 service vào UserService hay dùng Event?
+
+*Trả lời*: **Dùng Event** — UserService không cần biết ai quan tâm đến sự kiện này. Thêm/bớt listener không sửa UserService. Nếu inject 5 service: UserService bị phụ thuộc vào 5 component không liên quan đến core business logic, test khó vì phải mock nhiều hơn.
+
+**Câu hỏi Trick**
+
+> `@EventListener` vs `@TransactionalEventListener` — khác nhau thế nào?
+
+*Trả lời*: `@EventListener` fire ngay khi event publish (có thể trong cùng transaction). `@TransactionalEventListener` chờ transaction commit xong mới fire — đảm bảo data đã được lưu trước khi listener chạy. Dùng `@TransactionalEventListener` khi listener cần đọc data vừa save (ví dụ gửi email sau khi user record đã commit).

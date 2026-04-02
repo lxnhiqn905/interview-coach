@@ -161,3 +161,207 @@ target/
 .env
 node_modules
 ```
+
+---
+
+## Q3: Docker Networking — Bridge, Host, Overlay
+
+**Trả lời Basic**
+
+| Network Driver | Đặc điểm | Dùng khi |
+|---|---|---|
+| `bridge` | Default, containers trong cùng host giao tiếp qua virtual network | Dev, single-host |
+| `host` | Container dùng trực tiếp network của host | Performance critical, không cần isolation |
+| `overlay` | Nhiều Docker host, dùng trong Swarm/K8s | Multi-host, cluster |
+| `none` | Không có network | Isolated task |
+
+**Trả lời Nâng cao**
+
+```bash
+# Tạo custom bridge network
+docker network create my-network
+
+# Container chỉ giao tiếp được với container trong cùng network
+docker run --network my-network --name api api-image
+docker run --network my-network --name db postgres
+
+# Giao tiếp qua hostname (container name)
+# Từ api container: psql -h db -U postgres
+```
+
+> Custom bridge tốt hơn default bridge: hỗ trợ **DNS resolution theo container name**, isolation tốt hơn.
+
+**Câu hỏi Trick**
+
+> Hai container trên cùng host, cùng `docker run` mặc định — giao tiếp được với nhau không?
+
+*Trả lời*: Có thể, nhưng **không qua hostname** — phải dùng IP. Nên tạo custom network và dùng container name để DNS resolve. Default bridge không tự động có DNS.
+
+---
+
+## Q4: Docker Volumes — Persist Data
+
+**Trả lời Basic**
+
+| Loại | Mount | Dùng khi |
+|---|---|---|
+| **Volume** | Managed by Docker (`/var/lib/docker/volumes/`) | DB data, production |
+| **Bind mount** | Host path tùy chọn | Dev (live reload), config |
+| **tmpfs** | RAM only, không persist | Sensitive data, cache tạm |
+
+**Trả lời Nâng cao**
+
+```bash
+# Volume — Docker quản lý
+docker run -v my-data:/var/lib/postgresql/data postgres
+
+# Bind mount — map thư mục host vào container
+docker run -v $(pwd)/src:/app/src node-app  # Dev: code thay đổi ngay
+
+# Backup volume
+docker run --rm -v my-data:/data -v $(pwd):/backup \
+  alpine tar czf /backup/backup.tar.gz /data
+```
+
+**Câu hỏi Trick**
+
+> Xóa container thì volume có bị xóa không?
+
+*Trả lời*: **Không** — volume có lifecycle độc lập với container. Phải xóa riêng: `docker volume rm my-data` hoặc `docker rm -v container-name`. Đây là cơ chế bảo vệ data. Bind mount thì data nằm trên host, hoàn toàn không bị ảnh hưởng.
+
+---
+
+## Q5: Docker Compose — Quản lý multi-container
+
+**Trả lời Basic**
+
+```yaml
+# docker-compose.yml
+services:
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - DB_HOST=db
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  db:
+    image: postgres:15
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_PASSWORD: secret
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 5s
+      retries: 5
+    networks:
+      - app-network
+
+volumes:
+  db-data:
+
+networks:
+  app-network:
+```
+
+**Câu hỏi Trick**
+
+> `depends_on` có đảm bảo DB ready trước khi API start không?
+
+*Trả lời*: `depends_on` chỉ đảm bảo container **start theo thứ tự**, không đảm bảo service **ready**. DB có thể start nhưng chưa accept connection. Cần thêm `condition: service_healthy` kết hợp với `healthcheck` như ví dụ trên.
+
+---
+
+## Q6: Docker Security — Best Practices
+
+**Trả lời Basic**
+
+| Practice | Vấn đề tránh |
+|---|---|
+| Không chạy container với root | Nếu bị compromise, attacker có full quyền |
+| Dùng image nhỏ (alpine, distroless) | Giảm attack surface |
+| Scan image (Trivy, Snyk) | Phát hiện CVE trong dependencies |
+| Không hardcode secret | Secret leak qua `docker history` |
+| Read-only filesystem | Ngăn attacker ghi file |
+
+**Trả lời Nâng cao**
+
+```dockerfile
+# Non-root user
+FROM eclipse-temurin:17-jre-alpine
+RUN addgroup -S app && adduser -S app -G app
+USER app  # Chạy với user non-root
+
+# Read-only với tmpfs cho temp
+# docker run --read-only --tmpfs /tmp myimage
+```
+
+**Câu hỏi Trick**
+
+> Secret truyền qua `ENV` trong Dockerfile có an toàn không?
+
+*Trả lời*: **Không** — `ENV` bị lưu trong image layer, `docker history` hoặc `docker inspect` đều thấy. Đúng cách: truyền qua runtime (`-e`, `--env-file`), hoặc Docker Secrets (Swarm), hoặc mount file từ secret manager.
+
+---
+
+## Q7: Docker Registry — Docker Hub vs Private Registry
+
+**Trả lời Basic**
+
+| | Docker Hub | Private Registry (ECR, GCR, Harbor) |
+|---|---|---|
+| Chi phí | Free (public), trả phí (private) | Chi phí lưu trữ cloud |
+| Security | Public image có thể pull bởi ai | Kiểm soát access qua IAM |
+| Rate limit | Có (100-200 pulls/6h free) | Không |
+| Use case | Open source, public image | Production, private code |
+
+**Câu hỏi tình huống**
+
+> Pipeline CI/CD đột ngột fail với lỗi "Too Many Requests" khi pull image. Nguyên nhân và fix?
+
+*Trả lời*: Docker Hub rate limit. Fix:
+1. **Short-term**: Authenticate với Docker Hub account (tăng limit lên 200/6h)
+2. **Medium-term**: Cache base images trong Private Registry (ECR mirror)
+3. **Long-term**: Dùng base image từ ECR Public Gallery hoặc tự host registry nội bộ
+
+**Câu hỏi Trick**
+
+> Làm thế nào để chỉ pull image nếu có version mới, tránh kéo lại image giống hệt?
+
+*Trả lời*: Dùng **image digest** thay vì tag. Tag `latest` có thể thay đổi, nhưng digest (`sha256:abc123...`) là cố định. Trong production, pin image theo digest để đảm bảo reproducible deployment.
+
+---
+
+## Q8: Health Check trong Docker — Cấu hình đúng
+
+**Trả lời Basic**
+
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD curl -f http://localhost:8080/actuator/health || exit 1
+```
+
+| Option | Ý nghĩa |
+|---|---|
+| `--interval` | Bao lâu check 1 lần |
+| `--timeout` | Timeout per check |
+| `--start-period` | Bỏ qua fail trong X giây đầu (app đang start) |
+| `--retries` | Fail bao nhiêu lần liên tiếp thì unhealthy |
+
+**Câu hỏi tình huống**
+
+> Container status là `unhealthy` nhưng app vẫn chạy bình thường. Debug thế nào?
+
+*Trả lời*: `docker inspect <container>` → xem `Health.Log` để thấy output của health check command. Thường nguyên nhân: `curl` không có trong image (dùng alpine), endpoint trả về non-2xx, hoặc timeout quá ngắn.
+
+**Câu hỏi Trick**
+
+> Docker Compose `healthcheck` và K8s `livenessProbe` — cái nào ưu tiên khi deploy lên K8s?
+
+*Trả lời*: **K8s probe** có quyền cao hơn — K8s tự manage container lifecycle, không phụ thuộc Docker healthcheck. Tuy nhiên Docker healthcheck vẫn hữu ích cho `depends_on` trong Compose khi dev local.

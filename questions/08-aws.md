@@ -131,3 +131,166 @@ Fargate đơn giản hơn nhưng đắt hơn EC2 (~30-40%). Dùng EC2 khi cần 
 - **Read Replica**: Async replica, **phục vụ read traffic** để giảm tải primary. Có thể promote lên primary nếu cần
 
 Dùng cả hai: Multi-AZ cho HA, Read Replica cho scale read.
+
+---
+
+## Q4: S3 — Storage Classes và Best Practices
+
+**Trả lời Basic**
+
+| Storage Class | Use case | Cost |
+|---|---|---|
+| Standard | Active data, frequent access | Cao nhất |
+| Standard-IA | Infrequent access, cần ngay khi cần | Thấp hơn, có retrieval fee |
+| One Zone-IA | Non-critical, có thể recreate | Thấp hơn Standard-IA |
+| Glacier Instant | Archive, access vài lần/năm | Rất thấp |
+| Glacier Deep Archive | Long-term archive, access < 1 lần/năm | Thấp nhất |
+
+**Trả lời Nâng cao**
+
+```json
+// Lifecycle policy — tự động transition
+{
+  "Rules": [{
+    "Status": "Enabled",
+    "Transitions": [
+      {"Days": 30, "StorageClass": "STANDARD_IA"},
+      {"Days": 90, "StorageClass": "GLACIER_IR"}
+    ],
+    "Expiration": {"Days": 365}
+  }]
+}
+```
+
+**Câu hỏi Trick**
+
+> S3 bucket public, ai cũng đọc được — làm thế nào expose file cho user mà không public bucket?
+
+*Trả lời*: **Pre-signed URL** — tạo URL tạm thời có expiry (15 phút, 1 giờ), chỉ user có URL mới đọc được file đó. Bucket vẫn private, không cần CloudFront. Dùng cho download link, upload form cho user.
+
+---
+
+## Q5: Lambda — Serverless và khi nào KHÔNG dùng
+
+**Trả lời Basic**
+
+| Phù hợp Lambda | Không phù hợp |
+|---|---|
+| Event-driven (S3 trigger, SQS) | Long-running task (> 15 phút) |
+| API không thường xuyên | Latency-sensitive (cold start) |
+| Batch job nhỏ | Stateful workload |
+| Glue code giữa AWS services | High-throughput, constant traffic |
+
+**Trả lời Nâng cao**
+
+> **Cold start** là vấn đề lớn nhất của Lambda:
+> - Lần đầu invoke (hoặc sau idle): AWS phải provision container → 100ms - 1s+ latency
+> - Java/Python nặng hơn Node.js/Go vì startup time lớn hơn
+> - Fix: Provisioned Concurrency (giữ N instance warm, tốn tiền), hoặc chuyển sang container-based
+
+**Câu hỏi Trick**
+
+> Lambda có thể access resource trong VPC (RDS, ElastiCache) không? Trade-off là gì?
+
+*Trả lời*: Có — cấu hình VPC config cho Lambda. Nhưng **cold start tăng lên đáng kể** (trước đây 10-30s, bây giờ đã cải thiện). Nếu Lambda cần access RDS thường xuyên, xem xét **RDS Proxy** để giảm connection overhead (Lambda có thể tạo nhiều connection ngắn hạn → exhaust DB connection pool).
+
+---
+
+## Q6: VPC — Thiết kế network cho production
+
+**Trả lời Basic**
+
+```
+VPC (10.0.0.0/16)
+├── Public Subnet (10.0.1.0/24) — Internet Gateway
+│   └── Load Balancer, NAT Gateway, Bastion Host
+└── Private Subnet (10.0.2.0/24) — NAT Gateway
+    ├── EC2 App servers
+    ├── EKS nodes
+    └── RDS (Database Subnet)
+```
+
+**Trả lời Nâng cao**
+
+> Multi-AZ best practice:
+
+```
+AZ-1a:                          AZ-1b:
+Public Subnet (10.0.1.0/24)     Public Subnet (10.0.3.0/24)
+Private Subnet (10.0.2.0/24)    Private Subnet (10.0.4.0/24)
+```
+
+> **NAT Gateway**: Cho phép resource trong private subnet access internet (outbound) mà không expose inbound. Mỗi AZ cần 1 NAT Gateway riêng — nếu dùng chung 1 NAT, khi AZ đó down thì private subnet AZ kia mất internet.
+
+**Câu hỏi Trick**
+
+> Security Group và NACL đều có thể block traffic — nếu SG allow nhưng NACL deny, traffic qua được không?
+
+*Trả lời*: **Không** — NACL là tầng bảo vệ ngoài (subnet level), stateless. Nếu NACL deny thì traffic bị block dù SG allow. Và ngược lại. Cả hai phải allow thì traffic mới qua được.
+
+---
+
+## Q7: CloudWatch — Monitoring và Alerting trên AWS
+
+**Trả lời Basic**
+
+| Feature | Dùng cho |
+|---|---|
+| **Metrics** | CPU, Memory, custom metrics từ app |
+| **Logs** | Centralize log từ EC2, Lambda, ECS |
+| **Alarms** | Alert khi metric vượt ngưỡng |
+| **Dashboards** | Visualize metrics |
+| **Events/EventBridge** | Trigger Lambda theo schedule hoặc AWS event |
+| **Container Insights** | ECS/EKS metrics chi tiết |
+
+**Câu hỏi tình huống**
+
+> EC2 bị reboot giữa đêm, không biết nguyên nhân. Debug thế nào bằng CloudWatch?
+
+*Trả lời*:
+1. **CloudWatch Logs**: Xem system log (`/var/log/syslog`, `/var/log/messages`) trong khoảng thời gian trước reboot
+2. **EC2 Instance Status Check**: Xem hardware/software failure metrics
+3. **CloudTrail**: Ai (người hay automation) gọi `RebootInstances` API không?
+4. **CloudWatch Alarms**: Có alarm nào trigger auto-recovery không?
+
+**Câu hỏi Trick**
+
+> CloudWatch custom metric có thể push từ app không? Hay chỉ pull?
+
+*Trả lời*: **Push** — app gọi `PutMetricData` API hoặc dùng CloudWatch Agent. Ví dụ: push business metric (số order/phút, queue depth) để alert. Phí tính theo số metric và API call — design cẩn thận để tránh tốn tiền.
+
+---
+
+## Q8: IAM Best Practices — Least Privilege trong thực tế
+
+**Trả lời Basic**
+
+> **Least Privilege**: Chỉ cấp đúng permission cần thiết, không hơn.
+
+| Anti-pattern | Best practice |
+|---|---|
+| `AdministratorAccess` cho app | Role chỉ có permission cụ thể |
+| Dùng root account hàng ngày | Root chỉ dùng cho billing/initial setup |
+| Long-lived access key | IAM Role (temporary credentials) |
+| Shared credentials | Mỗi service/person có identity riêng |
+
+**Trả lời Nâng cao**
+
+```json
+// IAM Policy với condition — chỉ cho phép action trong giờ hành chính
+{
+  "Effect": "Allow",
+  "Action": ["s3:GetObject"],
+  "Resource": "arn:aws:s3:::my-bucket/*",
+  "Condition": {
+    "DateGreaterThan": {"aws:CurrentTime": "2024-01-01T08:00:00Z"},
+    "DateLessThan": {"aws:CurrentTime": "2024-12-31T18:00:00Z"}
+  }
+}
+```
+
+**Câu hỏi Trick**
+
+> IAM Role vs IAM User — tại sao app trên EC2/Lambda phải dùng Role, không dùng User?
+
+*Trả lời*: IAM User có **long-lived credentials** (access key không hết hạn) — nếu leak là thảm họa. IAM Role cấp **temporary credentials** (1 giờ, auto-rotate) — ngay cả khi bị capture, expire nhanh. EC2/Lambda tự động nhận credential từ Instance Metadata Service, không cần hardcode gì.

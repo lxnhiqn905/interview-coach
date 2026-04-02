@@ -242,3 +242,151 @@ map.get(u2)    // null — vì hashCode khác nhau!
 **Trick 2**: `HashMap` lưu trữ theo cơ chế gì khi 2 key có cùng `hashCode()`?
 
 *Trả lời*: Hash collision — các entry có cùng bucket được lưu dưới dạng **LinkedList**. Từ Java 8, nếu bucket có hơn 8 phần tử, tự động chuyển sang **Red-Black Tree** để giữ O(log n) thay vì O(n).
+
+---
+
+## Q5: Generics — Type Erasure và Wildcards
+
+**Trả lời Basic**
+
+| | Raw Type | Generic |
+|---|---|---|
+| Compile-time check | Không | Có |
+| Runtime safety | Cast exception runtime | Phát hiện sớm |
+| Ví dụ sai | `List list = new ArrayList(); list.add("a"); int i = (int)list.get(0);` | Compile error ngay |
+
+**Trả lời Nâng cao**
+
+```java
+// Wildcard
+void printList(List<?> list) { ... }          // Unknown type (read-only)
+void addNumbers(List<? extends Number> list)  // Number hoặc subtype (read)
+void addToList(List<? super Integer> list)    // Integer hoặc supertype (write)
+
+// PECS: Producer Extends, Consumer Super
+void copy(List<? extends T> src, List<? super T> dest) {
+    for (T item : src) dest.add(item);
+}
+```
+
+**Type Erasure**: Generic type bị xóa tại runtime — `List<String>` và `List<Integer>` đều là `List` ở bytecode.
+
+**Câu hỏi Trick**
+
+> `List<Object>` có phải supertype của `List<String>` không?
+
+*Trả lời*: **Không** — đây là bẫy kinh điển. `String` là subtype của `Object`, nhưng `List<String>` **không** là subtype của `List<Object>`. Nếu cho phép, ta có thể add `Integer` vào `List<String>` thông qua reference `List<Object>` → type safety bị phá vỡ. Dùng `List<? extends Object>` (hay `List<?>`) nếu cần.
+
+---
+
+## Q6: Garbage Collection — JVM GC hoạt động thế nào?
+
+**Trả lời Basic**
+
+| Vùng nhớ | Lưu gì | GC |
+|---|---|---|
+| **Heap** | Object instances | Có (GC chính) |
+| **Stack** | Local variables, call frames | Không (tự deallocate khi method return) |
+| **Metaspace** | Class metadata | Có (khi class unload) |
+
+**Generational GC:**
+
+| Generation | Lưu gì | GC frequency |
+|---|---|---|
+| Young (Eden + Survivor) | Object mới tạo | Thường xuyên (Minor GC) |
+| Old (Tenured) | Object sống lâu | Ít hơn (Major GC) |
+
+**Trả lời Nâng cao**
+
+> **GC Algorithms:**
+> - **G1GC** (default Java 9+): Chia heap thành regions, predictable pause time
+> - **ZGC** (Java 15+ production): Low latency (<1ms pause), cho heap lớn
+> - **Shenandoah**: Tương tự ZGC, concurrent compaction
+
+**Câu hỏi Trick**
+
+> `System.gc()` có đảm bảo GC chạy ngay không?
+
+*Trả lời*: Không — chỉ là **hint** cho JVM. JVM có thể bỏ qua. Trong production, không bao giờ gọi `System.gc()` — nó có thể trigger Full GC làm stop-the-world pause, ảnh hưởng latency. Để JVM tự quản lý GC.
+
+---
+
+## Q7: String Pool và String Immutability
+
+**Trả lời Basic**
+
+```java
+String a = "hello";           // String pool
+String b = "hello";           // Tái dùng từ pool
+String c = new String("hello"); // Tạo mới trên heap
+
+a == b        // true  — cùng reference trong pool
+a == c        // false — c ở heap, không phải pool
+a.equals(c)   // true  — cùng nội dung
+```
+
+**Tại sao String immutable?**
+1. **String Pool**: Nhiều variable chia sẻ cùng object — nếu mutable, thay đổi 1 chỗ ảnh hưởng tất cả
+2. **Thread-safe**: Immutable không cần synchronization
+3. **Hashcode cacheable**: String dùng làm key trong HashMap, hashcode tính 1 lần và cache
+
+**Câu hỏi Trick**
+
+> `String` concatenation trong loop — vấn đề gì?
+
+*Trả lời*: Mỗi `+` tạo `String` object mới → O(n²) memory. Dùng `StringBuilder` trong loop:
+
+```java
+// Sai — tạo N intermediate String objects
+String result = "";
+for (String s : list) result += s;
+
+// Đúng
+StringBuilder sb = new StringBuilder();
+for (String s : list) sb.append(s);
+String result = sb.toString();
+```
+
+---
+
+## Q8: Java Memory Model — happens-before
+
+**Trả lời Basic**
+
+> Java Memory Model (JMM) định nghĩa **khi nào** một thread có thể thấy thay đổi từ thread khác.
+
+**happens-before** đảm bảo: nếu A happens-before B, thì tất cả thay đổi của A **visible** cho B.
+
+| Quy tắc | Ví dụ |
+|---|---|
+| Program order | Dòng code trước happens-before dòng sau (cùng thread) |
+| Monitor lock | `unlock()` happens-before `lock()` tiếp theo |
+| `volatile` write | Write happens-before mọi read sau đó |
+| Thread start | `thread.start()` happens-before code trong thread |
+| Thread join | Code trong thread happens-before `thread.join()` return |
+
+**Trả lời Nâng cao**
+
+> **Vấn đề không có happens-before:**
+
+```java
+int x = 0;
+boolean ready = false;
+
+// Thread 1
+x = 42;
+ready = true;  // Compiler/CPU có thể reorder!
+
+// Thread 2
+if (ready) {
+    System.out.println(x);  // Có thể in ra 0 (không phải 42)!
+}
+```
+
+> Fix: Khai báo `ready` là `volatile` → tạo happens-before giữa write và read.
+
+**Câu hỏi Trick**
+
+> CPU reorder instruction để optimize — Java có bị ảnh hưởng không?
+
+*Trả lời*: Có — cả compiler lẫn CPU đều có thể reorder. JMM đảm bảo **single-thread correctness** (kết quả giống như code chạy tuần tự) nhưng **không đảm bảo visibility across threads** trừ khi có synchronization. Đây là lý do cần `synchronized`/`volatile`/`Atomic` classes.

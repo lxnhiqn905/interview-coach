@@ -276,3 +276,204 @@ Gợi ý trả lời:
 → `Promise.all`: Nếu 1 promise reject → toàn bộ reject ngay, các promise khác vẫn chạy nhưng result bị bỏ
 → `Promise.allSettled`: Đợi tất cả xong, trả về array với status của từng promise (fulfilled/rejected)
 → Dùng `allSettled` khi muốn biết kết quả của tất cả, kể cả cái bị lỗi (ví dụ: gửi notification cho 100 user, muốn biết cái nào fail)
+
+---
+
+## Q5: Memory Leaks trong Node.js — Phát hiện và Fix
+
+### Trả lời Basic
+
+| Nguyên nhân phổ biến | Ví dụ |
+|---|---|
+| Global variable accumulate | `global.cache = {}` không có eviction |
+| EventEmitter listener chưa remove | `emitter.on('data', handler)` trong loop |
+| Closure giữ reference | Callback giữ large object sống |
+| Timer chưa clear | `setInterval` không `clearInterval` |
+| Cache không giới hạn | Map/object lớn dần mãi |
+
+### Trả lời Nâng cao
+
+**Detect memory leak:**
+
+```bash
+# Chạy với --inspect, dùng Chrome DevTools
+node --inspect app.js
+
+# Hoặc dùng clinic.js
+npx clinic heapprofiler -- node app.js
+
+# Đơn giản: log memory usage
+setInterval(() => {
+  const { heapUsed } = process.memoryUsage();
+  console.log(`Heap: ${Math.round(heapUsed / 1024 / 1024)}MB`);
+}, 5000);
+```
+
+**Fix EventEmitter leak:**
+
+```javascript
+// Sai — mỗi request add listener, không remove
+app.get('/stream', (req, res) => {
+  emitter.on('data', (data) => res.write(data)); // Leak!
+});
+
+// Đúng
+app.get('/stream', (req, res) => {
+  const handler = (data) => res.write(data);
+  emitter.on('data', handler);
+  req.on('close', () => emitter.off('data', handler)); // Cleanup
+});
+```
+
+### Câu hỏi Trick
+
+**Trick:** `WeakMap` và `WeakRef` dùng để làm gì liên quan đến memory?
+
+→ `WeakMap` giữ key theo **weak reference** — nếu key object không còn reference nào khác, GC có thể thu hồi, entry trong WeakMap tự động bị xóa. Dùng để attach metadata vào object mà không prevent GC. `WeakRef` tương tự cho direct reference.
+
+---
+
+## Q6: Express.js Middleware Pattern
+
+### Trả lời Basic
+
+```javascript
+// Middleware signature: (req, res, next) => void
+app.use((req, res, next) => {
+  console.log(`${req.method} ${req.path}`);
+  next(); // Gọi middleware tiếp theo
+});
+
+// Error middleware — phải có 4 params
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(500).json({ error: err.message });
+});
+```
+
+**Thứ tự quan trọng:**
+```
+Request → Middleware 1 → Middleware 2 → Route Handler → Error Handler → Response
+```
+
+### Trả lời Nâng cao
+
+```javascript
+// Middleware factory — tái dụng với config
+function rateLimit(maxRequests) {
+  const counts = new Map();
+  return (req, res, next) => {
+    const ip = req.ip;
+    const count = (counts.get(ip) || 0) + 1;
+    counts.set(ip, count);
+    if (count > maxRequests) return res.status(429).json({ error: 'Too many requests' });
+    next();
+  };
+}
+
+app.use('/api', rateLimit(100));
+```
+
+### Câu hỏi Trick
+
+**Trick:** `next()` vs `next(err)` — khác nhau thế nào?
+
+→ `next()` chuyển sang middleware tiếp theo bình thường. `next(err)` bỏ qua tất cả middleware thường, nhảy thẳng đến **error handler** (middleware có 4 params). Đây là cách Express phân biệt normal flow và error flow.
+
+---
+
+## Q7: PM2 — Process Manager cho Production
+
+### Trả lời Basic
+
+```bash
+# Chạy app với PM2
+pm2 start app.js --name "api" --instances max
+
+# Xem status
+pm2 status
+pm2 logs api
+
+# Auto-restart khi server reboot
+pm2 startup
+pm2 save
+```
+
+| PM2 Feature | Tác dụng |
+|---|---|
+| `--instances max` | Cluster mode, tận dụng hết CPU |
+| `--watch` | Restart khi file thay đổi (dev) |
+| `--max-memory-restart 500M` | Restart khi vượt memory limit |
+| Zero-downtime reload | `pm2 reload api` — reload không drop connection |
+
+### Trả lời Nâng cao
+
+```javascript
+// ecosystem.config.js — config as code
+module.exports = {
+  apps: [{
+    name: 'api',
+    script: 'src/index.js',
+    instances: 'max',
+    exec_mode: 'cluster',
+    max_memory_restart: '500M',
+    env_production: {
+      NODE_ENV: 'production',
+      PORT: 3000
+    },
+    error_file: './logs/err.log',
+    out_file: './logs/out.log',
+  }]
+};
+```
+
+### Câu hỏi Trick
+
+**Trick:** PM2 cluster mode vs Docker — trong K8s có nên dùng PM2 cluster không?
+
+→ Trong K8s, **không nên** dùng PM2 cluster mode — K8s đã handle scaling bằng cách chạy nhiều Pod. Mỗi Pod nên chạy **1 Node.js instance** (single process) để K8s kiểm soát được resource limit per container. PM2 cluster trong K8s là over-engineering và làm phức tạp resource management.
+
+---
+
+## Q8: Node.js Security Best Practices
+
+### Trả lời Basic
+
+| Vulnerability | Fix |
+|---|---|
+| Dependency CVE | `npm audit`, Snyk, Dependabot |
+| Injection | Input validation (Joi, Zod), parameterized queries |
+| Prototype pollution | Validate/sanitize object input |
+| SSRF | Whitelist allowed URLs, không fetch user-provided URL |
+| Secrets in code | dotenv + .gitignore, không commit .env |
+
+### Trả lời Nâng cao
+
+```javascript
+// Helmet.js — set security headers
+const helmet = require('helmet');
+app.use(helmet());
+// Tự động set: Content-Security-Policy, X-Frame-Options,
+// X-XSS-Protection, Strict-Transport-Security...
+
+// Rate limiting với express-rate-limit
+const rateLimit = require('express-rate-limit');
+app.use('/api/', rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 phút
+  max: 100,
+  standardHeaders: true,
+}));
+
+// Input validation với Zod
+const schema = z.object({
+  email: z.string().email(),
+  age: z.number().int().min(0).max(120),
+});
+const data = schema.parse(req.body); // Throw nếu invalid
+```
+
+### Câu hỏi Trick
+
+**Trick:** `eval()` và `new Function()` trong Node.js có nguy hiểm không?
+
+→ **Rất nguy hiểm** nếu input đến từ user — **Remote Code Execution (RCE)**. User có thể inject code tùy ý chạy trên server. Không bao giờ eval user input. Tương tự: `child_process.exec()` với unescaped user input → **Command Injection**.
