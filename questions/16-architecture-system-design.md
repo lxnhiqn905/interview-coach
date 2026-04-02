@@ -614,3 +614,253 @@ Dùng **HTTP 202 Accepted** (không phải 200) — chuẩn REST cho async opera
 - **Polling**: Đơn giản, không cần infrastructure thêm. Phù hợp khi job chạy lâu (>1 phút), tần suất check thấp (mỗi 5-10 giây). Nhược điểm: delay tùy interval, tốn request không cần thiết
 - **WebSocket**: Realtime, server push khi có update. Phù hợp khi cần feedback ngay (<10 giây), nhiều user cùng theo dõi. Nhược điểm: phức tạp hơn (persistent connection, scale với Redis Pub/Sub)
 - **Server-Sent Events (SSE)**: Middle ground — server push, nhưng chỉ một chiều (server → client), đơn giản hơn WebSocket. Tốt cho dashboard realtime đọc nhiều, không cần client gửi
+
+---
+
+## Q11: Async ẩn chứa những vấn đề gì mà Sync không có?
+
+**Trả lời Basic** *(Các bẫy ẩn của Async)*
+
+> Chuyển sang Async không chỉ là "đẩy vào queue là xong" — nó kéo theo một loạt vấn đề mới mà Sync không có.
+
+| Vấn đề ẩn | Sync | Async |
+|---|---|---|
+| **Duplicate processing** | Không xảy ra | Có — broker retry khi consumer chưa ack |
+| **Message ordering** | Luôn đúng thứ tự | Không đảm bảo cross-partition |
+| **Distributed transaction** | 1 transaction DB là đủ | Không có transaction qua queue |
+| **Debugging** | Stack trace liên tục | Trace bị đứt giữa producer và consumer |
+| **Backpressure** | Caller tự chờ (natural throttle) | Queue đầy → drop hoặc block |
+| **Message schema** | Không cần versioning | Consumer cũ/mới phải backward compatible |
+
+**Trả lời Nâng cao** *(Hidden problem chi tiết)*
+
+**Bẫy 1 — Duplicate message:**
+```
+OrderService publish "OrderCreated" → Kafka
+EmailWorker nhận message → gửi email → crash trước khi ack
+Kafka retry → EmailWorker nhận lại → gửi email lần 2 → user nhận 2 email
+```
+Fix: **Idempotency key** — kiểm tra event_id trước khi xử lý:
+```
+EmailWorker nhận event:
+    Kiểm tra event_id trong Redis/DB
+    Đã xử lý → skip (return ok)
+    Chưa → gửi email → lưu event_id
+```
+
+**Bẫy 2 — Ordering bị phá vỡ:**
+```
+User update profile 3 lần: A → B → C
+Kafka partition khác nhau → Consumer nhận: A → C → B
+Profile bị lưu sai thứ tự!
+```
+Fix: Route theo **user_id làm partition key** — cùng user luôn vào cùng partition, ordering được đảm bảo.
+
+**Bẫy 3 — Dual write problem (không phải vấn đề của Async mà khi chuyển sang Async):**
+```java
+// NGUY HIỂM — không atomic
+orderRepo.save(order);           // Lưu DB thành công
+kafkaProducer.send(orderEvent);  // Send Kafka FAIL → DB có order nhưng không có event
+```
+Fix: **Outbox Pattern** — lưu event vào cùng DB transaction với data, sau đó relay sang Kafka:
+```
+BEGIN transaction
+    INSERT INTO orders ...
+    INSERT INTO outbox (event) ...
+COMMIT
+→ Outbox relay process đọc outbox và gửi Kafka
+```
+
+**Câu hỏi tình huống**
+
+> Team quyết định chuyển toàn bộ microservice communication từ REST sang Kafka để "decouple". 3 tháng sau team kêu ca debug rất khó, đôi khi order bị xử lý 2 lần. Nguyên nhân và bạn tư vấn gì?
+
+*Trả lời*: Team chuyển Async mà chưa chuẩn bị cho 3 vấn đề:
+1. **Duplicate** — chưa implement idempotency, consumer crash rồi retry → xử lý 2 lần
+2. **Debug khó** — chưa setup distributed tracing (correlation ID qua mọi message), log không liên kết được request → consumer
+3. **Overcorrection** — không phải mọi communication đều cần Async. Nếu `OrderService` cần biết giá từ `PricingService` ngay, Async không phù hợp
+
+Tư vấn: Implement **Idempotency** trước (nhanh, fix duplicate ngay). Setup **Distributed Tracing** (OpenTelemetry). Xem lại từng flow — chỉ Async những gì thực sự không cần kết quả ngay.
+
+**Câu hỏi Trick**
+
+**Trick 1**: Consumer xử lý message thành công nhưng ack bị mất (network issue). Điều gì xảy ra?
+
+*Trả lời*: Broker timeout → retry → consumer xử lý lại lần 2 → **duplicate**. Đây là lý do Async **at-least-once delivery** (ít nhất 1 lần, có thể nhiều hơn) là mặc định của hầu hết broker. **Exactly-once** rất đắt (Kafka Transactions), chỉ dùng khi thực sự cần (financial transaction). Giải pháp thực tế: **at-least-once + idempotent consumer**.
+
+---
+
+**Trick 2**: Message đã ở trong queue 3 ngày nhưng chưa được xử lý (consumer down). Khi consumer recover, xử lý message cũ có vấn đề gì?
+
+*Trả lời*: **Message expiry và stale data**. Message "hủy order nếu chưa thanh toán sau 30 phút" sau 3 ngày mới được xử lý → hủy order đã được thanh toán manual. Fix: Mỗi message có **timestamp**, consumer kiểm tra "message có quá cũ không?" trước khi xử lý. Hoặc set **TTL** cho message trong queue — hết TTL thì route sang DLQ thay vì tiếp tục process.
+
+---
+
+## Q12: Client-side vs Server-side Service Discovery — Hidden Trade-off
+
+**Trả lời Basic** *(So sánh quyết định)*
+
+| | Client-side Discovery | Server-side Discovery |
+|---|---|---|
+| **Cơ chế** | Client query registry → tự chọn instance | Client gọi LB/DNS → LB tìm instance |
+| **Ví dụ** | Eureka + Ribbon (Netflix), Consul + client lib | K8s Service, AWS ALB + ECS, Nginx upstream |
+| **Client library** | Phải có (mỗi language một lib) | Không cần — chỉ cần HTTP |
+| **Load balancing** | Client tự quyết định | LB quyết định |
+| **Latency** | Thấp hơn (1 network hop) | Cao hơn (qua LB) |
+| **Visibility** | Phức tạp — logic phân tán | Tập trung — dễ monitor |
+| **Language support** | Cần lib cho từng language | Universal |
+
+**Quyết định nhanh:**
+
+```
+Dùng Server-side nếu:
+  ✓ Dùng Kubernetes (K8s Service là built-in)
+  ✓ Nhiều ngôn ngữ trong hệ thống
+  ✓ Muốn ít complexity trong service code
+  ✓ AWS/GCP ecosystem (ALB, Cloud Load Balancing)
+
+Dùng Client-side nếu:
+  ✓ Cần load balancing logic phức tạp (zone-aware, weighted)
+  ✓ Cần latency cực thấp (bỏ 1 hop qua LB)
+  ✓ Team đã có Consul/Eureka ecosystem
+  ✓ Cần fine-grained control (circuit breaker tại client)
+```
+
+**Trả lời Nâng cao** *(Hidden problems)*
+
+**Hidden problem của Client-side:**
+
+```
+Hệ thống có 5 service (Java, Python, Go, Node, .NET)
+Client-side Discovery → cần 5 lib khác nhau:
+    Java: Spring Cloud + Ribbon
+    Python: py-consul
+    Go: go-consul-api
+    Node.js: node-consul
+    .NET: Consul.NET
+
+→ 5 lib, 5 codebase để maintain, version không đồng nhau
+→ Load balancing logic khác nhau giữa các service
+→ Bug ở 1 lib ảnh hưởng service đó
+```
+
+**Hidden problem của Server-side:**
+
+```
+K8s Service (ClusterIP) → kube-proxy trên mỗi node
+→ Traffic: Pod A → kube-proxy (iptables) → Pod B
+
+Vấn đề: kube-proxy không biết Pod B đang xử lý request nặng
+→ Round-robin vẫn route traffic đến Pod B đang quá tải
+→ Cần thêm Pod Disruption Budget, HPA để compensate
+
+Với Client-side (Envoy/Istio): biết được load của từng pod
+→ Least-request load balancing thực sự
+```
+
+**Câu hỏi tình huống**
+
+> Hệ thống đang dùng Kubernetes. Dev đề xuất thêm Consul để làm Service Discovery "cho linh hoạt hơn". Bạn đồng ý không?
+
+*Trả lời*: **Không đồng ý** — đây là over-engineering khi đã có K8s. K8s Service + CoreDNS đã là Server-side Service Discovery đầy đủ, battle-tested, zero config. Thêm Consul tạo ra **2 registry song song** → phải sync → thêm failure point. Consul có giá trị khi: multi-cluster, multi-cloud, có service ngoài K8s cần cùng registry. Nếu cần advanced load balancing → dùng **Istio** (service mesh) thay vì Consul.
+
+**Câu hỏi Trick**
+
+**Trick 1**: K8s Service là Server-side Discovery, nhưng kube-proxy implement bằng iptables — có vấn đề gì ở scale lớn?
+
+*Trả lời*: iptables là **O(n) lookup** — với 10,000 Service rules, mỗi packet phải traverse toàn bộ ruleset. Tại scale lớn (hàng nghìn service), kube-proxy/iptables trở thành bottleneck. Fix:
+- **IPVS mode** (kube-proxy): Hash table thay vì iptables → O(1) lookup
+- **Cilium** (eBPF-based): Bypass iptables hoàn toàn, handle ở kernel level → performance tốt hơn nhiều
+- Đây là lý do các cluster lớn (1000+ node) chuyển sang Cilium
+
+---
+
+**Trick 2**: Service Discovery và Health Check phải phối hợp thế nào? Điều gì xảy ra nếu Health Check sai?
+
+*Trả lời*: Service Discovery chỉ biết "service đang chạy" nhờ Health Check. Nếu Health Check sai:
+- **False healthy** (service unhealthy nhưng health check pass): Discovery vẫn route traffic → request fail tại client. Xảy ra khi health check quá đơn giản (chỉ check port open, không check actual business logic)
+- **False unhealthy** (service healthy nhưng health check fail): Discovery deregister service → unnecessary downtime → flapping. Xảy ra khi health check dependency nặng (check DB, external API) bị timeout
+- **Best practice**: Health check phải **lightweight và self-contained** — kiểm tra internal state của service, không phụ thuộc external dependency. Dependency failure nên là `degraded`, không phải `down`
+
+---
+
+## Q13: Sync vs Async — Bài test quyết định nhanh
+
+**Trả lời Basic** *(Framework quyết định)*
+
+> 5 câu hỏi để quyết định Sync hay Async:
+
+| Câu hỏi | Sync | Async |
+|---|---|---|
+| User có đang chờ kết quả không? | **Sync** | Async |
+| Cần kết quả để xử lý bước tiếp theo? | **Sync** | Async |
+| Consumer có thể down mà không ảnh hưởng flow chính? | Sync | **Async** |
+| Throughput chênh lệch lớn giữa producer và consumer? | Sync | **Async** |
+| Cần audit trail / replay event? | Sync | **Async** |
+
+**Ra quyết định:**
+```
+Tất cả Sync → gọi trực tiếp
+Tất cả Async → queue/event
+Hỗn hợp → tách bước: phần sync xong trước, phần async đẩy vào queue
+```
+
+**Trả lời Nâng cao** *(Các tình huống cụ thể)*
+
+**Case 1 — Payment checkout:**
+```
+User click "Pay" → cần biết thành công hay thất bại ngay
+→ SYNC: OrderService → PaymentGateway (timeout 30s)
+→ Nếu timeout: hiện lỗi, user thử lại
+→ KHÔNG async vì user không biết kết quả
+```
+
+**Case 2 — Gửi email sau khi register:**
+```
+User register xong → email là side effect
+→ ASYNC: push vào queue → EmailWorker gửi
+→ Register vẫn thành công dù email service down
+→ User không cần biết email đã gửi chưa ngay lúc này
+```
+
+**Case 3 — Sync bắt buộc + Async side effect (pattern phổ biến nhất):**
+```
+User checkout:
+    SYNC: validate cart → check inventory → charge payment → create order
+    ↓ (order created)
+    ASYNC: send confirmation email
+           update loyalty points
+           notify warehouse
+           update analytics
+```
+
+**Case 4 — Cái bẫy: "Async cho performance":**
+```
+Team A: "gọi PricingService chậm 200ms, chuyển sang Async để nhanh hơn"
+→ SAI — OrderService vẫn cần giá để tính total
+→ Async không giúp latency, chỉ giúp decoupling
+→ Fix thực sự: cache giá, optimize PricingService, gRPC thay REST
+```
+
+**Câu hỏi tình huống**
+
+> Bạn vào team mới, thấy code: `kafkaProducer.send("check-fraud", orderData)` rồi ngay sau đó `kafkaConsumer.poll()` chờ kết quả fraud check trong vòng 5 giây. Bạn nhận xét gì?
+
+*Trả lời*: Đây là **Sync-over-Async anti-pattern** — dùng queue nhưng block chờ response như sync. Kết quả tệ nhất của cả 2 thế giới:
+- Overhead của async (serialization, queue, network)
+- Nhưng vẫn block như sync (không được lợi thế throughput/decoupling)
+- Nếu consumer chậm → timeout 5s → user thấy lỗi
+
+**Đúng cách**: Nếu fraud check bắt buộc phải xong trước khi confirm order → **gọi trực tiếp bằng gRPC/REST** (nhanh hơn, đơn giản hơn). Nếu fraud check có thể async → cho phép order tạm thời và mark "pending fraud review", notify user sau nếu bị flag.
+
+**Câu hỏi Trick**
+
+**Trick 1**: "Chúng tôi dùng Kafka nên hệ thống của chúng tôi là event-driven." Nhận xét?
+
+*Trả lời*: **Kafka là tool, Event-Driven là architecture pattern** — không phải cứ dùng Kafka là event-driven. Nếu dùng Kafka nhưng consumer block chờ response, hoặc chỉ dùng Kafka để transfer data từ DB này sang DB kia (data pipeline), đó không phải event-driven. Event-driven thực sự: service phản ứng với event, không phụ thuộc vào producer, có thể replay event để rebuild state.
+
+---
+
+**Trick 2**: Service A cần notify Service B và C khi có sự kiện. Dùng **1 topic Kafka** (B và C cùng subscribe) hay **2 topic riêng** (A gửi vào 2 topic)?
+
+*Trả lời*: **1 topic, B và C là 2 consumer group khác nhau** — đây là cách Kafka thiết kế. Mỗi consumer group đọc toàn bộ message độc lập với nhau. Tách 2 topic chỉ khi B và C cần **schema khác nhau** hoặc **retention policy khác nhau**. 2 topic còn tạo thêm vấn đề: A phải gửi 2 lần → nếu 1 cái fail → inconsistent. 1 topic → A gửi 1 lần → B và C tự đọc độc lập.
