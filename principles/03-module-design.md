@@ -92,7 +92,8 @@ public class OrderService {
 
 ## Q2: Law of Demeter — Đừng nói chuyện với người lạ
 
-**Nguyên tắc:** "Each unit should only talk to its immediate friends; don't talk to strangers."
+**Nguyên tắc:** Một object chỉ nên giao tiếp với những "người bạn gần" — đừng với tay qua nhiều lớp object để lấy dữ liệu hay gọi hành vi.
+> Trích dẫn Ian Holland: "Each unit should only talk to its immediate friends; don't talk to strangers."
 
 ### Trả lời Basic
 
@@ -184,7 +185,8 @@ order.getCustomer().getAccount().deduct(amount);
 
 ## Q3: Composition vs Inheritance — Khi nào dùng cái nào?
 
-**Nguyên tắc:** "Favor composition over inheritance." — Gang of Four
+**Nguyên tắc:** Ưu tiên kết hợp các object lại với nhau (HAS-A) thay vì kế thừa (IS-A) — linh hoạt hơn, ít phụ thuộc hơn, dễ thay đổi hơn.
+> Trích dẫn Gang of Four: "Favor composition over inheritance."
 
 ### Trả lời Basic
 
@@ -277,7 +279,8 @@ User premiumUser = new User(new PremiumPricing(), new MultiChannelNotification()
 
 ## Q4: Inversion of Control (IoC) & Dependency Injection (DI)
 
-**Nguyên tắc:** "Don't call us, we'll call you." — Hollywood Principle
+**Nguyên tắc:** Framework gọi code của bạn, không phải bạn gọi framework — quyền điều khiển luồng chạy được đảo ngược từ application sang framework/container.
+> Trích dẫn Hollywood Principle: "Don't call us, we'll call you."
 
 ### Trả lời Basic
 
@@ -383,7 +386,8 @@ public class OrderService {
 
 ## Q5: Command Query Separation (CQS)
 
-**Nguyên tắc:** "A method should either change state or return a value, never both." — Bertrand Meyer
+**Nguyên tắc:** Mỗi method chỉ làm một trong hai: hoặc thực hiện hành động (thay đổi state), hoặc trả về giá trị — không vừa làm vừa trả.
+> Trích dẫn Bertrand Meyer: "A method should either change state or return a value, never both."
 
 ### Trả lời Basic
 

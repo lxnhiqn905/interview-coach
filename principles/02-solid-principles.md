@@ -2,7 +2,8 @@
 
 ## Q1: SRP — Single Responsibility Principle
 
-**Nguyên tắc:** "A class should have only one reason to change." — Robert C. Martin
+**Nguyên tắc:** Mỗi class chỉ nên có một lý do duy nhất để thay đổi — đừng để nhiều stakeholder khác nhau cùng "sở hữu" một class.
+> Trích dẫn Robert C. Martin: "A class should have only one reason to change."
 
 ### Trả lời Basic
 
@@ -75,7 +76,8 @@ public class UserReportService {
 
 ## Q2: OCP — Open/Closed Principle
 
-**Nguyên tắc:** "Software entities should be open for extension, but closed for modification."
+**Nguyên tắc:** Có thể mở rộng hành vi của class mà không cần sửa code đang chạy — thêm tính năng mới bằng cách thêm code mới, không sửa code cũ.
+> Trích dẫn Bertrand Meyer: "Software entities should be open for extension, but closed for modification."
 
 ### Trả lời Basic
 
@@ -160,7 +162,8 @@ applicationEventPublisher.publishEvent(new OrderCreatedEvent(order));
 
 ## Q3: LSP — Liskov Substitution Principle
 
-**Nguyên tắc:** "Objects of a subtype must be substitutable for objects of their supertype without altering program correctness."
+**Nguyên tắc:** Subclass phải hoạt động đúng ở mọi nơi mà parent class được dùng — không được phá vỡ kỳ vọng của người gọi.
+> Trích dẫn Barbara Liskov: "Objects of a subtype must be substitutable for objects of their supertype without altering program correctness."
 
 ### Trả lời Basic
 
@@ -255,7 +258,8 @@ public class Penguin extends Bird { } // không implement FlyingBird
 
 ## Q4: ISP — Interface Segregation Principle
 
-**Nguyên tắc:** "Clients should not be forced to depend on interfaces they do not use."
+**Nguyên tắc:** Đừng ép client phụ thuộc vào những method họ không dùng — hãy tách interface lớn thành nhiều interface nhỏ, đúng nhu cầu của từng client.
+> Trích dẫn Robert C. Martin: "Clients should not be forced to depend on interfaces they do not use."
 
 ### Trả lời Basic
 
@@ -340,7 +344,8 @@ public interface UserMaintenanceRepository { List<User> findInactiveForCleanup()
 
 ## Q5: DIP — Dependency Inversion Principle
 
-**Nguyên tắc:** High-level modules should not depend on low-level modules. Both should depend on abstractions.
+**Nguyên tắc:** Module cấp cao không nên phụ thuộc trực tiếp vào module cấp thấp — cả hai nên phụ thuộc vào abstraction (interface), không phải implementation cụ thể.
+> Trích dẫn Robert C. Martin: "High-level modules should not depend on low-level modules. Both should depend on abstractions."
 
 ### Trả lời Basic
 

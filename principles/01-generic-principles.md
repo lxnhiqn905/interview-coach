@@ -150,7 +150,8 @@ Total wasted: ~20+ hours cho feature không ai dùng
 
 ## Q3: DRY — Don't Repeat Yourself
 
-**Nguyên tắc:** "Every piece of knowledge must have a single, unambiguous, authoritative representation within a system."
+**Nguyên tắc:** Mỗi kiến thức/logic chỉ nên có một nơi duy nhất làm nguồn chính xác — không duplicate, không phân tán.
+> Trích dẫn Andy Hunt & Dave Thomas: "Every piece of knowledge must have a single, unambiguous, authoritative representation within a system."
 
 ### Trả lời Basic
 
@@ -230,7 +231,8 @@ service-c → shared-lib v1.2
 
 ## Q4: Boy Scout Rule — Luôn để lại code sạch hơn
 
-**Nguyên tắc:** "Leave the campground cleaner than you found it." — Robert C. Martin (Uncle Bob)
+**Nguyên tắc:** Mỗi lần chạm vào code, hãy để nó sạch hơn một chút so với lúc bạn mở — dù chỉ là đổi tên biến hay xóa comment thừa.
+> Trích dẫn Robert C. Martin: "Leave the campground cleaner than you found it."
 
 ### Trả lời Basic
 
@@ -299,7 +301,8 @@ Mỗi lần bạn chạm vào code, hãy để nó **tốt hơn một chút** so
 
 ## Q5: Avoid Premature Optimization
 
-**Nguyên tắc:** "Premature optimization is the root of all evil." — Donald Knuth
+**Nguyên tắc:** Đừng tối ưu hóa trước khi bạn biết chắc đâu là bottleneck — đo trước, optimize sau.
+> Trích dẫn Donald Knuth: "Premature optimization is the root of all evil."
 
 ### Trả lời Basic
 
