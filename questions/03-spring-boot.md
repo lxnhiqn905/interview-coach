@@ -356,3 +356,99 @@ public class EmailNotificationListener {
 > `@EventListener` vs `@TransactionalEventListener` — khác nhau thế nào?
 
 *Trả lời*: `@EventListener` fire ngay khi event publish (có thể trong cùng transaction). `@TransactionalEventListener` chờ transaction commit xong mới fire — đảm bảo data đã được lưu trước khi listener chạy. Dùng `@TransactionalEventListener` khi listener cần đọc data vừa save (ví dụ gửi email sau khi user record đã commit).
+
+---
+
+## Q9: Auto-configuration — Hoạt động thế nào, khi nào nó "hại" bạn?
+
+**Trả lời Basic** *(So sánh)*
+
+| | Truyền thống (Spring MVC XML/Java config) | Spring Boot Auto-config |
+|---|---|---|
+| Setup | Khai báo tường minh từng bean | Tự detect từ classpath và properties |
+| Cấu hình | Nhiều boilerplate | Zero config cho happy path |
+| Override | Luôn rõ ràng | Phải biết auto-config nào đang chạy |
+| Debug | Dễ trace | Phức tạp hơn khi có conflict |
+
+**Trả lời Nâng cao**
+
+> `@SpringBootApplication` = `@Configuration` + `@EnableAutoConfiguration` + `@ComponentScan`
+>
+> Auto-configuration hoạt động qua **`@Conditional`**:
+
+```java
+// Spring Boot auto-config bên trong (simplified)
+@Configuration
+@ConditionalOnClass(DataSource.class)        // Chỉ apply nếu có DataSource trên classpath
+@ConditionalOnMissingBean(DataSource.class)  // Chỉ apply nếu chưa có bean DataSource
+public class DataSourceAutoConfiguration {
+    @Bean
+    public DataSource dataSource() { ... }  // Tự tạo nếu bạn chưa tạo
+}
+```
+
+**Xem auto-config nào đang active:**
+```bash
+# application.properties
+debug=true  # In ra auto-configuration report khi start
+
+# Hoặc xem qua Actuator
+GET /actuator/conditions
+```
+
+**Khi auto-config "hại" bạn:**
+```
+Scenario: Bạn define bean DataSource riêng, nhưng app vẫn dùng auto-config DataSource
+→ Nguyên nhân: @ConditionalOnMissingBean chỉ check nếu bean CÙNG TYPE
+   Nếu bạn đặt @Bean trong wrong package → ComponentScan không tìm thấy → auto-config vẫn active
+→ Fix: Ensure @Configuration class nằm trong package được scan
+```
+
+**Câu hỏi Trick**
+
+> Thêm `spring-boot-starter-security` vào pom.xml. App đột ngột yêu cầu login. Tại sao?
+
+*Trả lời*: `spring-boot-starter-security` trigger **SecurityAutoConfiguration** — tự động bảo vệ tất cả endpoint với Basic Auth, generate random password mỗi lần start. Đây là ví dụ điển hình auto-config "surprise". Fix: tự define `SecurityFilterChain` bean → `@ConditionalOnMissingBean` sẽ disable auto-config security. **Rule of thumb**: Thêm starter mới thì đọc auto-configuration docs của nó trước.
+
+---
+
+## Q10: Spring Data JPA — `findBy` naming vs `@Query` vs `Specification` — Khi nào dùng cái nào?
+
+**Trả lời Basic** *(So sánh quyết định)*
+
+| Approach | Dùng khi | Giới hạn |
+|---|---|---|
+| Method naming (`findByNameAndAge`) | Query đơn giản, 1-2 condition | Tên method dài, không linh hoạt |
+| `@Query` JPQL/SQL | Query phức tạp, cố định | Không dynamic |
+| `Specification` | Filter động (search form) | Verbose |
+| QueryDSL | Phức tạp nhưng type-safe | Cần codegen setup |
+
+**Trả lời Nâng cao**
+
+```java
+// Method naming — auto-generate SQL từ tên method
+List<User> findByEmailAndActiveTrue(String email);
+List<User> findByAgeGreaterThanOrderByNameDesc(int age);
+// Giới hạn: findByFirstNameAndLastNameAndAgeGreaterThanAndCityAndActiveTrue(...)
+// → Tên quá dài, khó đọc → chuyển sang @Query
+
+// @Query — JPQL hoặc native SQL
+@Query("SELECT u FROM User u WHERE u.email = :email AND u.active = true")
+Optional<User> findActiveByEmail(@Param("email") String email);
+
+@Query(value = "SELECT * FROM users WHERE MATCH(name) AGAINST (:keyword)", nativeQuery = true)
+List<User> fullTextSearch(@Param("keyword") String keyword);
+
+// Specification — dynamic filter (search form với nhiều optional fields)
+Specification<User> spec = Specification.where(null);
+if (name != null) spec = spec.and((root, q, cb) -> cb.like(root.get("name"), "%" + name + "%"));
+if (city != null) spec = spec.and((root, q, cb) -> cb.equal(root.get("city"), city));
+
+userRepo.findAll(spec); // Chỉ add condition nếu field không null
+```
+
+**Câu hỏi Trick**
+
+> `@Query` với JPQL — tên entity hay tên table?
+
+*Trả lời*: **Tên entity (Java class name)**, không phải tên table. `FROM User` chứ không phải `FROM users`. Nếu dùng `nativeQuery = true` thì mới dùng tên table thật. Nhầm chỗ này thì Spring throw `EntityNotFoundException` hoặc không tìm thấy entity.

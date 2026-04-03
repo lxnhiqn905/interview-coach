@@ -294,3 +294,89 @@ Private Subnet (10.0.2.0/24)    Private Subnet (10.0.4.0/24)
 > IAM Role vs IAM User — tại sao app trên EC2/Lambda phải dùng Role, không dùng User?
 
 *Trả lời*: IAM User có **long-lived credentials** (access key không hết hạn) — nếu leak là thảm họa. IAM Role cấp **temporary credentials** (1 giờ, auto-rotate) — ngay cả khi bị capture, expire nhanh. EC2/Lambda tự động nhận credential từ Instance Metadata Service, không cần hardcode gì.
+
+---
+
+## Q9: EC2 vs ECS vs EKS vs Lambda — Framework quyết định
+
+**Trả lời Basic** *(So sánh quyết định)*
+
+| | EC2 | ECS (Fargate) | EKS | Lambda |
+|---|---|---|---|---|
+| Control | Toàn quyền OS | Container level | K8s + container | Chỉ function code |
+| Ops burden | Cao (patch, scale) | Trung bình | Cao (K8s complexity) | Thấp nhất |
+| Cold start | Không | ~30s (task start) | ~30s (pod start) | 100ms-1s |
+| Long-running | Có | Có | Có | Max 15 phút |
+| Cost model | Per hour | Per vCPU/GB per second | EC2/Fargate + cluster fee | Per invocation |
+| Dùng khi | Legacy app, cần OS access | Container, team nhỏ | Multi-team, K8s ecosystem | Event-driven, sporadic |
+
+**Quyết định nhanh:**
+```
+Legacy app, cần custom OS config           → EC2
+Container, không muốn K8s complexity       → ECS Fargate
+Đã có K8s expertise, multi-team           → EKS
+Event-driven, sporadic traffic             → Lambda
+API cần latency ổn định, constant traffic  → ECS hoặc EKS (không Lambda)
+```
+
+**Trả lời Nâng cao**
+
+> **Bẫy khi chọn Lambda cho web API:**
+```
+Yêu cầu: REST API cho mobile app, ~100 req/s đều đặn
+Team chọn Lambda vì "serverless = không lo infra"
+
+Vấn đề:
+- 100 req/s constant → Lambda luôn warm → provisioned concurrency → tốn tiền
+- Đôi khi spike 500 req/s → cold start → P99 latency tăng vọt
+- DB connection: Lambda tạo connection mới mỗi invocation → exhaust RDS connection pool
+
+So sánh cost tháng:
+- Lambda 100 req/s × 86400s × 30 ngày = 259M invocations
+  → $52 compute + $46 request fee = ~$100/tháng
+- ECS Fargate 2 tasks (1 vCPU, 2GB): ~$60/tháng
+  → Fargate rẻ hơn, latency ổn định hơn
+```
+
+**Câu hỏi Trick**
+
+> Team nói "Lambda auto-scale là infinite". Vấn đề ẩn là gì?
+
+*Trả lời*: **Account-level concurrency limit** (default 1000 concurrent executions). Nếu spike lớn hơn 1000 → throttle → 429 error. Hơn nữa, Lambda scale out → tạo nhiều connection DB → RDS connection pool exhausted. Fix: **RDS Proxy** (pool connection phía RDS) và request **concurrency limit increase** từ AWS trước khi cần.
+
+---
+
+## Q10: S3 vs EBS vs EFS vs FSx — Chọn storage đúng
+
+**Trả lời Basic** *(So sánh quyết định)*
+
+| | S3 | EBS | EFS | FSx |
+|---|---|---|---|---|
+| Loại | Object storage | Block storage | File system (NFS) | Managed file system |
+| Access | HTTP API / SDK | Gắn vào 1 EC2 | Mount từ nhiều EC2 | Windows/Lustre |
+| Latency | ms | Sub-ms | ms | Sub-ms (Lustre) |
+| Scalability | Unlimited | 64 TB per volume | Unlimited | Limited |
+| Cost | Thấp nhất | Trung bình | Cao nhất (per GB) | Cao |
+| Dùng khi | Static file, backup, data lake | OS volume, DB | Shared file giữa nhiều EC2 | Windows share, HPC |
+
+**Quyết định nhanh:**
+```
+Lưu image, video, file download cho user   → S3
+OS root volume của EC2                      → EBS (gp3)
+Database data volume                        → EBS (io2 cho IOPS cao)
+Shared code/config giữa nhiều EC2          → EFS
+Windows file share                          → FSx for Windows
+HPC, ML training data                      → FSx for Lustre
+```
+
+**Trả lời Nâng cao**
+
+> **S3 không phải file system** — không có directory thật, chỉ có key với `/` trong tên. `s3://bucket/folder/file.txt` — `folder/` không phải thư mục thật, chỉ là prefix của key. Nhiều tool (AWS Console, S3 Explorer) giả lập folder cho dễ dùng.
+
+> **EBS chỉ attach được vào 1 EC2** (trừ EBS Multi-Attach cho io1/io2 với điều kiện đặc biệt). Không thể mount cùng EBS vào 2 EC2 cho shared storage — dùng EFS thay thế.
+
+**Câu hỏi Trick**
+
+> App chạy 3 EC2 instance cần đọc chung 1 file config lớn 500MB, update hàng giờ. Dùng S3, EBS, hay EFS?
+
+*Trả lời*: **S3** — không cần EFS (đắt hơn, latency cao hơn cho read-heavy). App đọc từ S3 qua SDK, cache local, invalidate mỗi giờ. EFS chỉ cần thiết khi cần **POSIX file system semantics** (file lock, real-time sync, low latency write). 500MB read-only config → S3 là đủ và rẻ hơn nhiều.

@@ -594,3 +594,118 @@ ON orders (user_id, status) INCLUDE (total_amount, created_at);
 > Index có làm INSERT/UPDATE chậm hơn không?
 
 *Trả lời*: Có — mỗi index phải được update khi data thay đổi. Table có 10 index → mỗi INSERT update 10 index structure. **Index là trade-off**: tăng read speed, giảm write speed. Không đánh index cho mọi column — chỉ đánh khi có query thực tế cần và benchmark confirm improvement.
+
+---
+
+## Q9: `WHERE` vs `HAVING` vs Subquery — Bẫy thường gặp nhất
+
+**Trả lời Basic** *(So sánh quyết định)*
+
+| | `WHERE` | `HAVING` | Subquery |
+|---|---|---|---|
+| Filter | Row trước khi GROUP BY | Group sau khi GROUP BY | Kết quả của query khác |
+| Dùng aggregate? | Không (`COUNT`, `SUM`... không được) | Được | Được |
+| Performance | Nhanh (filter sớm) | Chậm hơn (phải group trước) | Phụ thuộc |
+| Dùng khi | Filter điều kiện đơn giản trên row | Filter dựa trên kết quả aggregate | Cần kết quả từ query khác |
+
+**Trả lời Nâng cao**
+
+```sql
+-- SAI: dùng WHERE với aggregate function
+SELECT department, COUNT(*) as headcount
+FROM employees
+WHERE COUNT(*) > 5        -- ERROR: aggregate không dùng được trong WHERE
+GROUP BY department;
+
+-- ĐÚNG: dùng HAVING cho aggregate condition
+SELECT department, COUNT(*) as headcount
+FROM employees
+GROUP BY department
+HAVING COUNT(*) > 5;      -- Filter sau khi đã group
+
+-- Kết hợp cả hai: WHERE filter row trước, HAVING filter group sau
+SELECT department, AVG(salary) as avg_salary
+FROM employees
+WHERE active = true           -- Chỉ nhân viên còn làm việc (filter row)
+GROUP BY department
+HAVING AVG(salary) > 50000;  -- Chỉ department có avg salary > 50k (filter group)
+```
+
+**Câu hỏi tình huống**
+
+> Query tìm department có hơn 5 nhân viên, nhưng chỉ tính nhân viên đang active. Viết đúng thứ tự WHERE và HAVING?
+
+```sql
+-- Đúng
+SELECT department, COUNT(*) as active_count
+FROM employees
+WHERE status = 'active'      -- 1. Filter row trước (loại bỏ inactive)
+GROUP BY department           -- 2. Group
+HAVING COUNT(*) > 5;         -- 3. Filter group (chỉ dept có > 5 người active)
+```
+
+*Nếu đặt ngược:* `HAVING status = 'active'` → lỗi vì `status` không phải aggregate và không nằm trong GROUP BY.
+
+**Câu hỏi Trick**
+
+> `SELECT COUNT(*) WHERE ...` vs `SELECT COUNT(*) HAVING ...` — khi không có GROUP BY?
+
+*Trả lời*: Không có GROUP BY thì toàn bộ result set là 1 group. `HAVING` vẫn hoạt động nhưng kỳ lạ — `HAVING COUNT(*) > 0` là filter 1 group duy nhất đó. Trong thực tế nếu không có GROUP BY, dùng `WHERE` cho điều kiện thông thường, và subquery nếu cần aggregate.
+
+---
+
+## Q10: NULL trong SQL — Những bẫy không ai nói cho bạn biết
+
+**Trả lời Basic** *(Các rule của NULL)*
+
+| Operation | Kết quả | Tại sao |
+|---|---|---|
+| `NULL = NULL` | `NULL` (không phải `TRUE`) | NULL là "không biết", không biết = không biết → không biết |
+| `NULL != NULL` | `NULL` | Tương tự |
+| `NULL = 5` | `NULL` | Không biết có bằng 5 không |
+| `5 + NULL` | `NULL` | Tính toán với "không biết" → không biết |
+| `COUNT(*)` | Đếm tất cả row | Bao gồm cả row có NULL |
+| `COUNT(column)` | Đếm row không NULL | Bỏ qua NULL |
+
+**Trả lời Nâng cao**
+
+```sql
+-- BẪY 1: So sánh NULL
+SELECT * FROM users WHERE email = NULL;    -- Không trả về gì! NULL = NULL là NULL
+SELECT * FROM users WHERE email IS NULL;   -- ĐÚNG
+
+-- BẪY 2: NOT IN với NULL
+SELECT * FROM orders WHERE user_id NOT IN (1, 2, NULL);
+-- Trả về RỖNG vì: NOT IN với NULL → NOT (x=1 OR x=2 OR x=NULL)
+-- x=NULL luôn là NULL → toàn bộ expression là NULL → không row nào thỏa
+-- FIX:
+SELECT * FROM orders WHERE user_id NOT IN (1, 2) AND user_id IS NOT NULL;
+
+-- BẪY 3: COUNT
+SELECT COUNT(*), COUNT(email) FROM users;
+-- COUNT(*) = 100, COUNT(email) = 95 nếu 5 user chưa có email
+
+-- BẪY 4: DISTINCT với NULL
+SELECT DISTINCT manager_id FROM employees;  -- Chỉ giữ 1 NULL dù có nhiều NULL
+
+-- COALESCE — thay NULL bằng giá trị mặc định
+SELECT name, COALESCE(phone, 'N/A') as phone FROM users;
+```
+
+**Câu hỏi tình huống**
+
+> Query `SELECT * FROM products WHERE category != 'Electronics'` — có trả về product có `category = NULL` không?
+
+*Trả lời*: **Không** — `NULL != 'Electronics'` trả về `NULL`, không phải `TRUE` → WHERE lọc ra. Để bao gồm cả NULL: `WHERE category != 'Electronics' OR category IS NULL`. Đây là bẫy cực kỳ phổ biến khi query không ra đủ data mà không biết tại sao.
+
+**Câu hỏi Trick**
+
+> `COALESCE` vs `ISNULL` vs `NVL` vs `IFNULL` — khác nhau thế nào?
+
+*Trả lời*: Về logic giống nhau — trả về giá trị đầu tiên không NULL. Khác nhau ở **database**:
+- `COALESCE(a, b, c)` — **SQL chuẩn**, chấp nhận nhiều argument, tất cả DB
+- `ISNULL(a, b)` — **SQL Server** only, chỉ 2 argument
+- `NVL(a, b)` — **Oracle** only
+- `IFNULL(a, b)` — **MySQL** only
+
+Dùng `COALESCE` nếu muốn portable code.

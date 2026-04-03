@@ -655,3 +655,123 @@ public User updateUser(Long id, UpdateUserDto dto) { ... }
 > Reviewer có nên chạy SAST tool (SonarQube) thay vì review security thủ công không?
 
 *Trả lời*: SAST và manual review **bổ sung cho nhau**, không thay thế nhau. SAST tốt cho: SQL injection (pattern-based), dependency CVE, hardcoded secret. SAST kém cho: **IDOR** (cần hiểu business logic), insecure design, race condition. Manual review bắt được những gì SAST bỏ sót vì cần hiểu context. Best practice: SAST trong CI/CD pipeline, manual security review cho feature liên quan đến auth/authorization.
+
+---
+
+## Q9: Early Return vs Nested Condition — Khi nào dùng cái nào?
+
+**Trả lời Basic** *(So sánh)*
+
+| | Nested if/else | Early Return (Guard Clause) |
+|---|---|---|
+| Readability | Kém khi nhiều tầng | Tốt hơn — happy path rõ ràng |
+| Cyclomatic complexity | Cao | Thấp |
+| Test cases cần | Nhiều (mọi nhánh) | Ít hơn (fail fast rõ ràng) |
+| Dùng khi | Ít condition, logic liên kết | Nhiều validation, fail cases |
+
+**Trả lời Nâng cao**
+
+```java
+// ❌ Nested — khó đọc, happy path bị chôn vùi
+public String processOrder(Order order) {
+    if (order != null) {
+        if (order.isValid()) {
+            if (order.getUser() != null) {
+                if (order.getUser().isActive()) {
+                    return fulfillOrder(order); // Happy path ở tầng sâu nhất
+                } else {
+                    return "User inactive";
+                }
+            } else {
+                return "No user";
+            }
+        } else {
+            return "Invalid order";
+        }
+    } else {
+        return "Order is null";
+    }
+}
+
+// ✅ Early Return — fail fast, happy path ở cuối
+public String processOrder(Order order) {
+    if (order == null) return "Order is null";
+    if (!order.isValid()) return "Invalid order";
+    if (order.getUser() == null) return "No user";
+    if (!order.getUser().isActive()) return "User inactive";
+
+    return fulfillOrder(order); // Happy path rõ ràng
+}
+```
+
+**Câu hỏi tình huống**
+
+> Team có convention "mỗi function chỉ có 1 return statement". Bạn thấy gì?
+
+*Trả lời*: Convention này hợp lý trong ngôn ngữ không có GC (C - cần cleanup trước khi return), nhưng trong Java/Python/Go là **anti-pattern** dẫn đến nested hell. "Single exit point" không còn là best practice hiện đại. Early return với guard clause tốt hơn nhiều về readability. Nên propose thay đổi convention với ví dụ cụ thể.
+
+**Câu hỏi Trick**
+
+> Code có 10 tầng if lồng nhau. Ngoài early return, còn cách nào refactor?
+
+*Trả lời*:
+- **Extract method**: Tách mỗi nhóm condition thành method riêng với tên rõ nghĩa
+- **Strategy Pattern**: Nếu các nhánh if xử lý cùng interface khác nhau → polymorphism
+- **Map/Table-driven**: Nếu nhiều `if (x == "A") return 1; if (x == "B") return 2;` → `Map.of("A", 1, "B", 2).get(x)`
+- **Validation framework**: Dùng Bean Validation thay vì if/else validation thủ công
+
+---
+
+## Q10: Code Smell — Nhận diện và phân loại
+
+**Trả lời Basic** *(Các code smell phổ biến)*
+
+| Smell | Dấu hiệu | Refactor |
+|---|---|---|
+| **Long Method** | Hàm > 20-30 dòng, làm nhiều thứ | Extract Method |
+| **Large Class** | Class > 500 dòng, quá nhiều responsibility | Extract Class |
+| **Long Parameter List** | Method có > 3-4 params | Parameter Object |
+| **Duplicate Code** | Copy-paste code | Extract Method/Class |
+| **Dead Code** | Biến/method không dùng | Xóa |
+| **Magic Number** | `if (status == 3)` | Named constant |
+| **Feature Envy** | Method dùng data của class khác nhiều hơn chính nó | Move Method |
+| **Data Class** | Class chỉ có getter/setter, không có behavior | Enrich class với behavior |
+
+**Trả lời Nâng cao**
+
+```java
+// Feature Envy — method của Order nhưng dùng data của Customer nhiều hơn
+class Order {
+    Customer customer;
+
+    double calculateDiscount() {
+        // ❌ Dùng customer data nhiều hơn order data → Feature Envy
+        if (customer.getLoyaltyYears() > 5) return 0.2;
+        if (customer.getTotalPurchases() > 10000) return 0.15;
+        if (customer.isPremium()) return 0.1;
+        return 0;
+    }
+}
+
+// ✅ Move Method — đặt logic về đúng chỗ
+class Customer {
+    double getDiscount() {  // Logic về Customer thì để ở Customer
+        if (loyaltyYears > 5) return 0.2;
+        if (totalPurchases > 10000) return 0.15;
+        if (isPremium) return 0.1;
+        return 0;
+    }
+}
+
+class Order {
+    double calculateDiscount() {
+        return customer.getDiscount(); // Đơn giản và đúng chỗ
+    }
+}
+```
+
+**Câu hỏi Trick**
+
+> Boolean parameter trong method signature — tại sao là code smell?
+
+*Trả lời*: `sendEmail(user, true)` — `true` có nghĩa gì? Boolean param thường là dấu hiệu method đang làm **2 việc khác nhau** tùy theo flag. Fix: tách thành 2 method rõ ràng: `sendEmailWithCC(user)` và `sendEmailWithoutCC(user)`. Hoặc dùng Enum thay Boolean để self-document: `sendEmail(user, EmailMode.WITH_CC)`.

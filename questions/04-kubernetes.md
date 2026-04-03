@@ -501,3 +501,97 @@ etcd yêu cầu **quorum** (đa số) để đồng ý một write operation:
 - **External etcd** (etcd cluster riêng biệt) — phức tạp hơn, tốn máy hơn, nhưng Control Plane và etcd scale độc lập, fault domain tách biệt
 
 Production với SLA cao → **External etcd**. Hầu hết production bình thường → **Stacked etcd với 3 Masters** là đủ.
+
+---
+
+## Q9: Service Types — ClusterIP vs NodePort vs LoadBalancer vs Headless
+
+**Trả lời Basic** *(So sánh quyết định)*
+
+| Type | Accessible từ | Dùng khi |
+|---|---|---|
+| `ClusterIP` (default) | Chỉ trong cluster | Service nội bộ, không expose ra ngoài |
+| `NodePort` | Ngoài cluster qua `NodeIP:Port` | Dev/test, không có cloud LB |
+| `LoadBalancer` | Internet qua cloud LB | Production, expose ra ngoài |
+| `ExternalName` | Alias cho DNS bên ngoài | Trỏ đến external service bằng DNS |
+| `Headless` (ClusterIP: None) | Pod IP trực tiếp | StatefulSet, custom discovery |
+
+**Trả lời Nâng cao**
+
+```yaml
+# ClusterIP — default, chỉ internal
+apiVersion: v1
+kind: Service
+spec:
+  type: ClusterIP          # Chỉ accessible trong cluster
+  selector:
+    app: backend
+  ports:
+    - port: 80             # Port của service
+      targetPort: 8080     # Port của pod
+
+# Headless — không có ClusterIP, DNS trả về pod IPs trực tiếp
+spec:
+  clusterIP: None          # Headless
+  # → DNS query "my-service" trả về list IP của tất cả pods
+  # → Kafka, Cassandra, Elasticsearch dùng cái này để peer discovery
+```
+
+**Khi nào dùng cái nào:**
+```
+Internal API (UserService gọi PaymentService)     → ClusterIP
+Dev testing (expose tạm)                          → NodePort
+Production public API                             → LoadBalancer (hoặc Ingress + ClusterIP)
+Kafka broker, Cassandra node discovery             → Headless
+Trỏ đến external DB với DNS name                  → ExternalName
+```
+
+**Câu hỏi Trick**
+
+> `LoadBalancer` service tạo ra gì trong AWS?
+
+*Trả lời*: Tạo một **AWS Classic/NLB Load Balancer** tự động — mỗi `LoadBalancer` service = 1 cloud LB riêng = chi phí riêng. 10 service `LoadBalancer` = 10 cloud LB. Đây là lý do dùng **Ingress** (1 LB duy nhất) thay vì nhiều `LoadBalancer` service trong production.
+
+---
+
+## Q10: Resource Requests vs Limits — Tại sao quan trọng và các bẫy ẩn
+
+**Trả lời Basic** *(So sánh)*
+
+| | `requests` | `limits` |
+|---|---|---|
+| Ý nghĩa | Tài nguyên **đảm bảo** cho pod | Tài nguyên **tối đa** pod được dùng |
+| Dùng để | Scheduler quyết định đặt pod vào node nào | Prevent runaway pod |
+| Khi vượt CPU limit | CPU bị throttle (chậm) | Không OOM Kill |
+| Khi vượt Memory limit | Không áp dụng | Pod bị **OOM Kill** và restart |
+
+**Trả lời Nâng cao**
+
+```yaml
+resources:
+  requests:
+    memory: "256Mi"   # Scheduler chỉ đặt pod vào node có ≥256Mi available
+    cpu: "250m"       # 250 millicores = 0.25 CPU core
+  limits:
+    memory: "512Mi"   # Pod bị kill nếu dùng > 512Mi
+    cpu: "500m"       # CPU bị throttle nếu dùng > 500m (KHÔNG bị kill)
+```
+
+**Hidden problems:**
+
+**Bẫy 1 — Không set requests:** Scheduler không biết pod cần bao nhiêu → đặt vào node đã đầy → pod bị evict hoặc node OOM.
+
+**Bẫy 2 — CPU limit quá thấp:** App bị CPU throttle → latency tăng bất thường → team nghĩ app bị bug, thực ra là bị throttle. Kiểm tra: `kubectl top pod` + Prometheus `container_cpu_cfs_throttled_seconds_total`.
+
+**Bẫy 3 — requests = limits (Guaranteed QoS):** Pod không bao giờ bị evict khi node pressure, nhưng lãng phí tài nguyên khi pod đang idle. **Burstable QoS** (requests < limits) linh hoạt hơn.
+
+**Câu hỏi tình huống**
+
+> Node memory đầy, K8s cần evict pod. Nó chọn pod nào?
+
+*Trả lời*: Theo **QoS class** từ thấp đến cao:
+1. **BestEffort** (không có requests/limits) — bị evict đầu tiên
+2. **Burstable** (requests < limits, hoặc chỉ có 1 trong 2) — bị evict nếu dùng vượt requests
+3. **Guaranteed** (requests = limits) — bị evict cuối cùng
+
+→ Production pod quan trọng nên set `requests = limits` (Guaranteed) để không bị evict bất ngờ.

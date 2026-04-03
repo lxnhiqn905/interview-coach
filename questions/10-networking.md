@@ -307,3 +307,101 @@ public class CorsConfig {
 > CORS là security feature của browser hay server? Backend có thể tắt CORS không?
 
 *Trả lời*: CORS là **browser policy** — server chỉ gửi header, browser quyết định có cho JavaScript đọc response không. Backend không thể "tắt" CORS trên browser. Nhưng backend có thể allow `*` (mọi origin) hoặc không gửi CORS header (browser block mặc định). **CORS không bảo vệ API** — curl, Postman vẫn gọi được bình thường, chỉ browser bị chặn.
+
+---
+
+## Q9: TCP/IP Model vs OSI Model — Tại sao cần biết cả hai?
+
+**Trả lời Basic** *(So sánh)*
+
+| TCP/IP Layer | OSI Layers tương đương | Protocol/Protocol |
+|---|---|---|
+| Application | Application + Presentation + Session | HTTP, HTTPS, DNS, SMTP, FTP |
+| Transport | Transport | TCP, UDP |
+| Internet | Network | IP, ICMP, ARP |
+| Network Access | Data Link + Physical | Ethernet, Wi-Fi, MAC |
+
+**Quyết định khi nào dùng model nào:**
+```
+Debug network issue thực tế              → TCP/IP (4 layer, thực tế hơn)
+Học lý thuyết, thi chứng chỉ (CCNA)    → OSI (7 layer, chi tiết hơn)
+Nói chuyện với network engineer         → Cả hai (họ nói L3, L4, L7...)
+```
+
+**Trả lời Nâng cao**
+
+> **Tại sao developer cần biết OSI layers:**
+> - L7 (Application): HTTP status codes, headers, REST, GraphQL
+> - L4 (Transport): TCP vs UDP, port numbers, connection pooling
+> - L3 (Network): IP, routing, subnet, NAT
+> - L2 (Data Link): MAC address, ARP, VLAN
+>
+> Khi debug: "Request timeout" — vấn đề ở L3 (routing) hay L4 (firewall block port) hay L7 (app crash)?
+
+**Câu hỏi tình huống**
+
+> `curl https://api.example.com/users` bị timeout. Debug theo các layer thế nào?
+
+*Trả lời*:
+```
+L3 — ping api.example.com → resolve IP? → nếu không: DNS issue
+L3 — traceroute api.example.com → packet đến đâu thì dừng?
+L4 — telnet api.example.com 443 → port 443 open không? → nếu không: firewall
+L4 — tcpdump → SYN gửi đi, có SYN-ACK về không?
+L7 — curl -v → TLS handshake ok? → HTTP response code?
+```
+
+**Câu hỏi Trick**
+
+> Load Balancer "layer 4" và "layer 7" — khác nhau thế nào trong thực tế?
+
+*Trả lời*:
+- **L4 LB (AWS NLB)**: Nhìn thấy IP + Port → forward TCP connection. Không hiểu HTTP. Nhanh hơn (không parse HTTP header). Dùng cho: non-HTTP traffic (database, MQTT), cần ultra-low latency.
+- **L7 LB (AWS ALB)**: Nhìn thấy HTTP method, URL path, Host header, Cookie → route theo content. Chậm hơn 1 chút (phải terminate và re-establish TCP). Dùng cho: HTTP microservices, path-based routing (`/api` → service A, `/web` → service B).
+
+---
+
+## Q10: NAT vs Proxy vs VPN — Hiểu đúng để không nhầm
+
+**Trả lời Basic** *(So sánh quyết định)*
+
+| | NAT | Forward Proxy | Reverse Proxy | VPN |
+|---|---|---|---|---|
+| Ai ở giữa | Router/Gateway | Client-side | Server-side | Encrypted tunnel |
+| Client biết server thật không? | Có | Không (proxy thay) | Có (qua proxy) | Có |
+| Server biết client thật không? | Không (thấy NAT IP) | Không (thấy proxy IP) | Không (thấy proxy IP) | Có |
+| Dùng khi | Private network ra internet | Bypass geo-block, corporate filter | Load balance, cache, SSL terminate | Secure tunnel, remote access |
+| Ví dụ | Home router, AWS NAT Gateway | Squid Proxy, corporate proxy | Nginx, HAProxy, AWS ALB | OpenVPN, WireGuard, AWS VPN |
+
+**Trả lời Nâng cao**
+
+```
+Home network:
+  Phone → [NAT: 192.168.1.2 → 203.0.113.5] → Internet → Google
+  Google thấy IP: 203.0.113.5 (không thấy 192.168.1.2)
+
+Corporate:
+  Employee → [Forward Proxy] → Internet → example.com
+  Proxy log tất cả request, filter content, bypass geo-block
+
+Production server:
+  User → [Reverse Proxy: Nginx] → [App Server: localhost:8080]
+  User không biết app chạy ở port 8080, không biết có bao nhiêu server
+```
+
+**Câu hỏi tình huống**
+
+> App trong private subnet cần gọi API bên ngoài (Stripe, Twilio). Không muốn expose IP của từng EC2. Giải pháp?
+
+*Trả lời*: **NAT Gateway** — đặt ở public subnet, EC2 trong private subnet route traffic qua NAT Gateway. Bên ngoài chỉ thấy Elastic IP của NAT Gateway, không thấy IP từng EC2. Có thể whitelist 1 IP duy nhất (EIP của NAT) với Stripe thay vì whitelist IP của tất cả EC2.
+
+**Câu hỏi Trick**
+
+> Nginx là web server, reverse proxy, hay load balancer?
+
+*Trả lời*: **Cả ba** — Nginx được dùng làm:
+- **Web server**: Serve static files trực tiếp
+- **Reverse proxy**: Forward request đến upstream app server (Django, Node.js)
+- **Load balancer**: Upstream group với nhiều server, round-robin/least-conn
+
+Cấu hình quyết định vai trò, không phải tool. Tương tự HAProxy, Traefik, Caddy — mỗi tool có thế mạnh khác nhau nhưng overlap nhiều chức năng.

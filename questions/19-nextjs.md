@@ -481,3 +481,116 @@ export default function ProductsPage() { ... }
 **Trick:** Zustand store có dùng được trong Server Component không?
 
 → Không — Server Component không có browser APIs, không có state, không có lifecycle. Zustand (và mọi client-side state management) chỉ dùng trong Client Component. Chia rõ: **server state** = fetch trong Server Component, **client UI state** = useState/Zustand trong Client Component.
+
+---
+
+## Q9: `use client` vs `use server` — Hiểu đúng boundary
+
+**Trả lời Basic** *(So sánh quyết định)*
+
+| | Server Component (default) | Client Component (`use client`) |
+|---|---|---|
+| Render | Server | Browser |
+| Bundle | Không gửi JS xuống client | Gửi code xuống client |
+| useState/useEffect | Không dùng được | Dùng được |
+| DB access | Trực tiếp | Phải qua API |
+| Event handlers | Không | Có (onClick, onChange) |
+| SEO | Tốt (HTML đầy đủ) | Tốt với SSR |
+| Dùng khi | Data fetching, static UI | Interactive, real-time |
+
+**Quyết định nhanh:**
+```
+Fetch data từ DB/API                 → Server Component
+Interactive (form, button, dropdown) → Client Component
+State management (useState)          → Client Component
+Animation, browser API (localStorage) → Client Component
+SEO-critical content                  → Server Component
+Sensitive data (DB credentials)       → Server Component (không leak sang client)
+```
+
+**Trả lời Nâng cao**
+
+> **Component tree composition — Server chứa Client, không ngược lại:**
+
+```tsx
+// ✅ Server Component chứa Client Component — OK
+// app/page.tsx (Server)
+export default async function Page() {
+  const data = await db.query(...)  // Server-only
+  return (
+    <div>
+      <h1>{data.title}</h1>
+      <LikeButton id={data.id} />  {/* Client Component */}
+    </div>
+  )
+}
+
+// ❌ Client Component import Server Component — KHÔNG thể
+// 'use client'
+// import ServerOnlyComponent from './ServerComponent'  // Error!
+// Server Component trong Client boundary sẽ bị convert sang Client
+
+// ✅ Đúng cách: truyền Server Component làm children props
+// 'use client'
+export default function Layout({ children }) {  // children có thể là Server Component
+  return <div>{children}</div>
+}
+```
+
+**Câu hỏi Trick**
+
+> `'use client'` ở top file — có nghĩa là toàn bộ subtree là Client Component?
+
+*Trả lời*: **Có** — `'use client'` đánh dấu boundary. Tất cả component import từ file đó trở xuống đều là Client Component. Để tối ưu bundle size: đặt `'use client'` càng sâu càng tốt (leaf component), tránh đặt ở layout/page level làm cả cây thành Client.
+
+---
+
+## Q10: Data Fetching Patterns — Waterfall vs Parallel vs Streaming
+
+**Trả lời Basic** *(So sánh)*
+
+| Pattern | Cơ chế | Thời gian | Dùng khi |
+|---|---|---|---|
+| **Sequential (Waterfall)** | Fetch 1 xong → fetch 2 | Tổng thời gian cộng lại | Data phụ thuộc nhau |
+| **Parallel** | Fetch tất cả cùng lúc | Thời gian của fetch chậm nhất | Data độc lập nhau |
+| **Streaming (Suspense)** | Render dần, phần nào xong hiện phần đó | User thấy content sớm nhất | UX quan trọng, data đến dần |
+
+**Trả lời Nâng cao**
+
+```tsx
+// ❌ Waterfall — 2 fetch tuần tự: 200ms + 300ms = 500ms
+async function UserProfile({ userId }) {
+  const user = await getUser(userId)       // 200ms
+  const posts = await getPosts(userId)     // 300ms sau khi user xong
+  return <div>{user.name}: {posts.length} posts</div>
+}
+
+// ✅ Parallel — max(200ms, 300ms) = 300ms
+async function UserProfile({ userId }) {
+  const [user, posts] = await Promise.all([
+    getUser(userId),     // Chạy song song
+    getPosts(userId),    // Chạy song song
+  ])
+  return <div>{user.name}: {posts.length} posts</div>
+}
+
+// ✅ Streaming — user thấy layout ngay, data hiện dần
+export default function Page({ userId }) {
+  return (
+    <div>
+      <UserInfo userId={userId} />  {/* Fast: 100ms */}
+      <Suspense fallback={<PostsSkeleton />}>
+        <SlowPosts userId={userId} />  {/* Slow: 500ms — stream khi xong */}
+      </Suspense>
+    </div>
+  )
+}
+```
+
+**Câu hỏi Trick**
+
+> `Promise.all` vs `Promise.allSettled` trong Next.js data fetching — khi nào dùng cái nào?
+
+*Trả lời*:
+- `Promise.all`: Nếu 1 fetch fail → toàn bộ page error. Dùng khi tất cả data là **critical** (không có trang nếu thiếu 1 cái)
+- `Promise.allSettled`: Tất cả fetch chạy, lấy kết quả dù pass hay fail. Dùng khi một số data là **optional** (page vẫn hiện được dù thiếu 1 phần). Ví dụ: user info là critical, recommendation sidebar là optional — dùng `allSettled` và show fallback UI nếu recommendation fail.

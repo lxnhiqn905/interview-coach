@@ -390,3 +390,107 @@ if (ready) {
 > CPU reorder instruction để optimize — Java có bị ảnh hưởng không?
 
 *Trả lời*: Có — cả compiler lẫn CPU đều có thể reorder. JMM đảm bảo **single-thread correctness** (kết quả giống như code chạy tuần tự) nhưng **không đảm bảo visibility across threads** trừ khi có synchronization. Đây là lý do cần `synchronized`/`volatile`/`Atomic` classes.
+
+---
+
+## Q9: `static` vs Instance — Khi nào dùng cái nào?
+
+**Trả lời Basic** *(So sánh)*
+
+| | `static` | Instance |
+|---|---|---|
+| Thuộc về | Class (dùng chung) | Object (mỗi object một bản) |
+| Truy cập | `ClassName.method()` | `object.method()` |
+| Truy cập instance variable | Không được | Được |
+| Tồn tại khi | Class được load | Object được tạo |
+| Dùng cho | Utility, constant, factory method | State và behavior của object |
+
+**Trả lời Nâng cao**
+
+```java
+public class MathUtils {
+    // static — không cần state, không cần tạo object
+    public static int square(int n) { return n * n; }
+}
+
+public class BankAccount {
+    private double balance;  // instance — mỗi tài khoản có balance riêng
+
+    // static counter — dùng chung cho toàn bộ class
+    private static int totalAccounts = 0;
+
+    public BankAccount() {
+        totalAccounts++;  // OK — static truy cập được từ constructor
+    }
+
+    public static int getTotalAccounts() {
+        return totalAccounts;
+        // return balance;  // COMPILE ERROR — static không truy cập instance var
+    }
+}
+```
+
+**Câu hỏi tình huống**
+
+> Đồng nghiệp viết `static` cho tất cả method để "không cần tạo object, gọi nhanh hơn". Vấn đề gì?
+
+*Trả lời*: `static` method không thể override — phá vỡ polymorphism. Không thể dùng với interface (không thể inject). Không thể mock trong unit test. `static` chỉ hợp lý khi method **không cần state của object** (utility, factory). Gọi nhanh hơn một chút nhưng đánh đổi toàn bộ OOP benefits.
+
+**Câu hỏi Trick**
+
+> `static` method có thể gọi từ instance không? Ngược lại thì sao?
+
+*Trả lời*: `static` **có thể gọi từ instance** (`obj.staticMethod()`) — compiler cho phép nhưng đây là bad practice vì đọc code trông như instance call. Instance method **không thể gọi từ static** context (compile error) vì không có `this` reference. IDE sẽ cảnh báo khi gọi static qua instance.
+
+---
+
+## Q10: Inheritance vs Composition — IS-A vs HAS-A
+
+**Trả lời Basic** *(So sánh quyết định)*
+
+| | Inheritance (IS-A) | Composition (HAS-A) |
+|---|---|---|
+| Quan hệ | "Con là một loại Cha" | "A chứa hoặc dùng B" |
+| Coupling | Tight — subclass phụ thuộc superclass | Loose — dễ swap implementation |
+| Reuse | Kế thừa toàn bộ, kể cả không cần | Chỉ dùng phần cần |
+| Thay đổi superclass | Ảnh hưởng tất cả subclass | Chỉ ảnh hưởng class đó |
+| Testability | Khó mock superclass | Dễ inject mock |
+
+**Quyết định nhanh:**
+```
+Nếu có thể nói "A IS-A B" và luôn đúng → Inheritance
+Nếu có thể nói "A HAS-A B" hoặc "A USES-A B" → Composition
+Nếu không chắc → Composition (ít risk hơn)
+```
+
+**Trả lời Nâng cao**
+
+```java
+// Sai — Inheritance khi không phải IS-A
+class Stack extends ArrayList {
+    // Stack IS-A ArrayList? KHÔNG — Stack chỉ dùng ArrayList để lưu
+    // Kết quả: Stack bị lộ toàn bộ ArrayList API (get, add at index...)
+    // User có thể thêm phần tử vào giữa Stack — phá vỡ Stack semantics
+}
+
+// Đúng — Composition
+class Stack {
+    private final ArrayList<Object> storage = new ArrayList<>(); // HAS-A
+
+    public void push(Object item) { storage.add(item); }
+    public Object pop() { return storage.remove(storage.size() - 1); }
+    // Chỉ expose Stack API — không lộ ArrayList internals
+}
+```
+
+**Câu hỏi tình huống**
+
+> Bạn đang thiết kế `PremiumUser` kế thừa `User`. 6 tháng sau yêu cầu thêm `TrialUser` cũng kế thừa `User`. Sau đó có `PremiumTrialUser`. Vấn đề gì xảy ra?
+
+*Trả lời*: **Class explosion** — inheritance hierarchy bùng nổ khi combine features. `PremiumUser`, `TrialUser`, `PremiumTrialUser`, `EnterpriseUser`, `EnterpriseTrialUser`... Đây là dấu hiệu cần **Composition + Strategy Pattern**: `User` HAS-A `UserPlan` (interface), implement `PremiumPlan`, `TrialPlan`, `EnterprisePlan`. Thêm plan mới không cần thêm class User.
+
+**Câu hỏi Trick**
+
+> Java không cho phép đa kế thừa class nhưng cho phép đa implement interface. Tại sao?
+
+*Trả lời*: **Diamond Problem** — nếu class A kế thừa B và C, cả B và C đều có `doSomething()` với logic khác nhau, A không biết dùng cái nào. Interface không có state, không có implementation (trước Java 8), nên không có ambiguity. Từ Java 8 có `default method` — nếu 2 interface có cùng `default method`, class **bắt buộc phải override** để resolve conflict.

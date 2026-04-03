@@ -349,3 +349,83 @@ double area(Shape shape) {
 ```java
 Point moved = new Point(p.x() + 1, p.y()); // p không đổi
 ```
+
+---
+
+## Q9: Lazy Evaluation trong Stream — Hiểu đúng để tránh bẫy
+
+**Trả lời Basic** *(So sánh)*
+
+| | Intermediate Operation | Terminal Operation |
+|---|---|---|
+| Ví dụ | `filter`, `map`, `sorted`, `distinct` | `collect`, `forEach`, `count`, `findFirst` |
+| Thực thi | **Lazy** — không chạy ngay | **Eager** — kích hoạt toàn bộ pipeline |
+| Số lần gọi | Chỉ khi cần (short-circuit possible) | Đúng 1 lần |
+| Return | Stream (tiếp tục chain) | Kết quả cuối |
+
+**Trả lời Nâng cao**
+
+```java
+// Lazy — filter và map chưa chạy ở đây
+Stream<String> stream = names.stream()
+    .filter(s -> { System.out.println("filter: " + s); return s.length() > 3; })
+    .map(s -> { System.out.println("map: " + s); return s.toUpperCase(); });
+
+System.out.println("Stream created, nothing ran yet");
+
+// Terminal operation → bây giờ mới chạy
+Optional<String> first = stream.findFirst();
+// Output: "filter: Alice", "map: Alice" — chỉ xử lý đến khi tìm được cái đầu tiên
+```
+
+**Short-circuit với `findFirst()`**: List có 1 triệu phần tử, `filter` chỉ pass 1 phần tử đầu → chỉ xử lý đến phần tử đó, không duyệt hết list.
+
+**Câu hỏi Trick**
+
+> Stream pipeline có `sorted()` ở giữa — `findFirst()` có còn lazy không?
+
+*Trả lời*: **Không hoàn toàn** — `sorted()` là **stateful operation**, phải duyệt hết tất cả phần tử trước khi sort, sau đó mới `findFirst()` lấy phần tử đầu. Nếu mục tiêu là lấy phần tử đầu theo điều kiện, tránh đặt `sorted()` trước `filter` khi không cần.
+
+---
+
+## Q10: Comparable vs Comparator — Khi nào dùng cái nào?
+
+**Trả lời Basic** *(So sánh quyết định)*
+
+| | `Comparable<T>` | `Comparator<T>` |
+|---|---|---|
+| Implement ở | Chính class đó | Class ngoài hoặc lambda |
+| Định nghĩa | "Natural order" của object | Ordering tùy chỉnh |
+| Method | `compareTo(T other)` | `compare(T o1, T o2)` |
+| Dùng | 1 cách sort duy nhất | Nhiều cách sort khác nhau |
+| Thay đổi | Phải sửa class gốc | Không cần sửa class gốc |
+
+**Trả lời Nâng cao**
+
+```java
+// Comparable — class tự biết so sánh thế nào
+public class Employee implements Comparable<Employee> {
+    private String name;
+    private int salary;
+
+    @Override
+    public int compareTo(Employee other) {
+        return this.name.compareTo(other.name); // Natural order: theo tên
+    }
+}
+
+// Comparator — sort theo nhiều cách khác nhau, không sửa class
+Comparator<Employee> bySalary = Comparator.comparingInt(Employee::getSalary);
+Comparator<Employee> byNameThenSalary = Comparator
+    .comparing(Employee::getName)
+    .thenComparingInt(Employee::getSalary);
+
+list.sort(bySalary);
+list.sort(byNameThenSalary);
+```
+
+**Câu hỏi Trick**
+
+> `compareTo()` phải return gì? Trả về `1`, `-1`, `0` hay có thể trả về số bất kỳ?
+
+*Trả lời*: **Số bất kỳ** — chỉ cần: âm (this < other), 0 (bằng nhau), dương (this > other). Bẫy kinh điển là dùng phép trừ làm shortcut: `return this.age - other.age` — nguy hiểm khi có số âm (integer overflow: `-2147483648 - 1 = 2147483647` dương). Dùng `Integer.compare(this.age, other.age)` thay thế.

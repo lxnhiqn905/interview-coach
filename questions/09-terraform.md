@@ -346,3 +346,95 @@ terraform {
 > `.terraform.lock.hcl` có nên commit vào git không?
 
 *Trả lời*: **Có** — đây là lock file tương tự `package-lock.json`. Đảm bảo mọi người dùng cùng provider version và checksum. Nếu không commit, mỗi lần `terraform init` có thể resolve version khác nhau → không reproducible.
+
+---
+
+## Q9: Terraform vs CloudFormation vs Pulumi vs Ansible — Chọn IaC tool nào?
+
+**Trả lời Basic** *(So sánh quyết định)*
+
+| | Terraform | CloudFormation | Pulumi | Ansible |
+|---|---|---|---|---|
+| Language | HCL (declarative) | JSON/YAML (declarative) | Python/TypeScript/Go (imperative) | YAML (procedural) |
+| Cloud support | Multi-cloud | AWS only | Multi-cloud | Multi-cloud |
+| State management | Tự quản lý (S3+DynamoDB) | AWS managed | Pulumi Cloud hoặc tự host | Không có (idempotent) |
+| Learning curve | Thấp | Trung bình | Cao (cần biết coding) | Thấp |
+| Strength | Provisioning infra | AWS-native, no state mgmt | Complex logic, testing | Config management, app deploy |
+| Dùng khi | Multi-cloud, chuẩn hóa IaC | AWS-only, muốn AWS manage state | Cần loop/condition phức tạp | Server config, app deployment |
+
+**Quyết định nhanh:**
+```
+Multi-cloud hoặc team đã biết Terraform      → Terraform
+AWS-only, không muốn manage state             → CloudFormation
+Team developer, cần logic phức tạp (loop)    → Pulumi
+Config server, install software               → Ansible
+Provision infra + config server               → Terraform + Ansible
+```
+
+**Trả lời Nâng cao**
+
+> **Ansible vs Terraform — dùng chung thế nào:**
+```
+Terraform:  Tạo EC2 instance, VPC, Security Group, RDS
+            ↓ output: EC2 IP
+Ansible:    Nhận IP → install Java, deploy app, configure nginx
+            → Config management KHÔNG phải thế mạnh của Terraform
+            → Provisioning KHÔNG phải thế mạnh của Ansible
+```
+
+**Câu hỏi Trick**
+
+> Terraform HCL là declarative nhưng lại có `for_each`, `count`, `dynamic block`. Không phải Terraform chỉ khai báo "muốn gì" thôi sao?
+
+*Trả lời*: Terraform là **declarative về end state** (khai báo infrastructure cần có) nhưng **có imperative constructs** để generate declarative config. `for_each` không phải loop thực thi lần lượt — nó generate nhiều resource declaration cùng lúc. Khác với Ansible (procedural — step 1 rồi step 2) hay Pulumi (imperative code thật sự).
+
+---
+
+## Q10: `terraform plan` output — Đọc hiểu ký hiệu và bẫy ẩn
+
+**Trả lời Basic** *(Ký hiệu trong plan output)*
+
+| Ký hiệu | Ý nghĩa | Risk |
+|---|---|---|
+| `+` (green) | Tạo resource mới | Thấp |
+| `-` (red) | Xóa resource | **Cao** — mất data |
+| `~` (yellow) | Update in-place | Thấp-Trung bình |
+| `-/+` (red/green) | **Destroy rồi recreate** | **Rất cao** — downtime |
+| `<=` | Data source refresh | Thấp |
+
+**Trả lời Nâng cao**
+
+> **Bẫy `-/+` (recreate) hay gặp nhất:**
+
+```hcl
+resource "aws_instance" "web" {
+  ami           = "ami-old"
+  instance_type = "t3.micro"
+}
+
+# Đổi AMI → plan hiện thị -/+ (destroy + create)
+# Lý do: AMI là immutable, không thể update in-place → phải tạo EC2 mới
+# Consequence: downtime nếu không có rolling update
+```
+
+**Cách đọc plan an toàn trước khi apply:**
+```bash
+# Xem chi tiết resource sẽ bị thay đổi
+terraform plan -out=tfplan
+terraform show -json tfplan | jq '.resource_changes[] | select(.change.actions[] == "delete")'
+
+# Chỉ apply 1 resource cụ thể
+terraform apply -target=aws_instance.web
+```
+
+**Câu hỏi tình huống**
+
+> `terraform plan` hiện 0 changes nhưng infrastructure thực tế có thay đổi (ai đó sửa tay trên Console). Tại sao?
+
+*Trả lời*: **Drift detection** — Terraform chỉ so sánh desired state (code) với **state file**, không so sánh trực tiếp với infrastructure thật. Nếu ai sửa tay nhưng state file không được update → plan thấy "no changes". Fix: `terraform refresh` để sync state file với thực tế trước khi plan. Dùng **Terraform Cloud** hoặc **Driftle** để auto-detect drift.
+
+**Câu hỏi Trick**
+
+> Resource có `prevent_destroy = true`. Chạy `terraform destroy` thì sao?
+
+*Trả lời*: **Terraform error, không destroy** — plan phase phát hiện `prevent_destroy` và fail ngay trước khi apply. Phải tắt flag trước mới destroy được. Nhưng **`terraform state rm`** vẫn hoạt động — xóa resource khỏi state mà không xóa infrastructure thật, rồi destroy infra thủ công. Đây là escape hatch nhưng cần cẩn thận.

@@ -323,3 +323,82 @@ public class DatabaseHealthIndicator implements HealthIndicator {
 - Liveness: chỉ check internal state (app có bị deadlock/OOM không) — **đừng check DB**, nếu DB chết thì restart app không giải quyết được gì
 - Readiness: check dependencies cần thiết để serve request (DB connection, cache connection)
 - External services: thường là "soft dependency" — nên return degraded thay vì down để tránh cascade failure
+
+---
+
+## Q9: Push vs Pull Monitoring — Prometheus vs StatsD vs CloudWatch Agent
+
+**Trả lời Basic** *(So sánh quyết định)*
+
+| | Pull (Prometheus) | Push (StatsD, CloudWatch Agent) |
+|---|---|---|
+| Cơ chế | Server scrape app định kỳ | App tự gửi metric đến server |
+| Service discovery | Built-in (tự tìm target) | App phải biết địa chỉ server |
+| Detect app down | Có (target unreachable) | Không (server chỉ nhận, không poll) |
+| Firewall/NAT | App phải expose port | App chủ động gửi ra ngoài |
+| Short-lived job | Khó (job xong trước khi scrape) | Tốt hơn (gửi ngay khi có) |
+| Dùng khi | Long-running service, K8s | Batch job, lambda, không expose port |
+
+**Trả lời Nâng cao**
+
+> **Prometheus Pushgateway** — giải quyết short-lived job:
+```
+Batch job → push metric → Pushgateway (cache) → Prometheus scrape Pushgateway
+```
+Nhưng Pushgateway có vấn đề: metric bị stale sau khi job xong nhưng vẫn được scrape → cần tự cleanup. Dùng `push_time_seconds` để detect staleness.
+
+> **CloudWatch Embedded Metric Format (EMF)**: Lambda ghi metric vào log theo format đặc biệt → CloudWatch Logs Agent parse → tạo metric tự động. Không cần Pushgateway, không cần SDK call.
+
+**Câu hỏi Trick**
+
+> Prometheus scrape interval là 15s. App crash lúc 10s sau lần scrape cuối. Alert sẽ fire sau bao lâu?
+
+*Trả lời*: **Tối thiểu 15s + alerting evaluation interval** (thường 1 phút). Nếu `for: 5m` trong alerting rule → alert fire sau 5 phút. Tổng: có thể mất **5-6 phút** để alert. Với hệ thống mission-critical, cần giảm scrape interval hoặc dùng blackbox exporter với synthetic monitoring để detect down nhanh hơn.
+
+---
+
+## Q10: Log Aggregation — Centralized Logging Architecture
+
+**Trả lời Basic** *(So sánh agent)*
+
+| | Filebeat | Fluentd/Fluent Bit | CloudWatch Agent | Vector |
+|---|---|---|---|---|
+| Footprint | Nhẹ (Go) | Trung bình (Ruby/C) | Trung bình | Rất nhẹ (Rust) |
+| Transformation | Ít | Nhiều plugin | Cơ bản | Mạnh |
+| Output | Elasticsearch, Logstash | 40+ output | CloudWatch only | Nhiều |
+| K8s integration | Tốt | Tốt nhất | Tốt (AWS) | Tốt |
+| Dùng khi | ELK stack | Flexible pipeline | AWS ecosystem | High-performance |
+
+**Centralized logging architecture:**
+
+```
+Pods/Containers
+      ↓ (stdout/stderr)
+  Fluent Bit DaemonSet (1 per node, nhẹ)
+      ↓ (forward)
+  Fluentd Aggregator (transform, buffer, route)
+      ↓
+  ┌──────────────────────┐
+  │ Elasticsearch (search)│
+  │ S3 (long-term archive)│
+  │ Kafka (stream)        │
+  └──────────────────────┘
+      ↓
+  Kibana/Grafana (visualize)
+```
+
+**Câu hỏi tình huống**
+
+> Log volume tăng 10x sau khi thêm DEBUG logging. Elasticsearch bị chậm. Xử lý thế nào mà không mất log quan trọng?
+
+*Trả lời*:
+1. **Sampling**: DEBUG log chỉ gửi 10% vào ES, 100% vào S3 (cold storage). ERROR/WARN vẫn 100%
+2. **Log level routing**: Fluentd route ERROR → ES (realtime search), DEBUG → S3 (batch query nếu cần)
+3. **ES ILM**: Hot → Warm → Cold → Delete theo thời gian. DEBUG delete sau 3 ngày, ERROR giữ 90 ngày
+4. **Structured logging**: Giảm log không cần thiết thay vì giảm log level — chỉ log những gì có giá trị
+
+**Câu hỏi Trick**
+
+> App log `user_id=123 action=login ip=1.2.3.4` — đây là structured log hay unstructured?
+
+*Trả lời*: **Unstructured** (dạng key=value trong plain text). **Structured log** thật sự là JSON: `{"user_id": 123, "action": "login", "ip": "1.2.3.4"}`. Khác biệt: Elasticsearch index JSON trực tiếp theo field → query `user_id:123` nhanh. Plain text phải parse bằng Grok pattern → chậm hơn, dễ break khi format thay đổi. Dùng **Logback + logstash-logback-encoder** (Java) hoặc **pino** (Node.js) để tự động output JSON.

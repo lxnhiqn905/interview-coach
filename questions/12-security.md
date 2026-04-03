@@ -428,3 +428,111 @@ public class ApiController {
 > Rate limit theo IP có vấn đề gì với user hợp lệ?
 
 *Trả lời*: **NAT và shared IP** — nhiều user hợp lệ trong cùng corporate network share 1 IP → rate limit chung ảnh hưởng tất cả. Fix: rate limit theo **authenticated user ID** (sau khi login) thay vì IP, kết hợp IP rate limit chỉ cho unauthenticated endpoints (login, register).
+
+---
+
+## Q9: Authentication vs Authorization — Phân biệt và các pattern phổ biến
+
+**Trả lời Basic** *(So sánh)*
+
+| | Authentication (AuthN) | Authorization (AuthZ) |
+|---|---|---|
+| Câu hỏi | "Bạn là ai?" | "Bạn được làm gì?" |
+| Kiểm tra | Identity (username/password, token) | Permission (role, scope, ownership) |
+| Xảy ra | Trước | Sau AuthN |
+| Fail → | 401 Unauthorized | 403 Forbidden |
+| Ví dụ | JWT verify, OAuth login | RBAC check, ABAC policy |
+
+**Các pattern Authorization phổ biến:**
+
+| Pattern | Mô tả | Dùng khi |
+|---|---|---|
+| **RBAC** (Role-Based) | User có Role, Role có Permission | Hầu hết app business |
+| **ABAC** (Attribute-Based) | Policy dựa trên attributes (user, resource, env) | Phức tạp, fine-grained |
+| **ACL** (Access Control List) | Per-resource, ai được làm gì | File system, shared doc |
+| **Ownership-based** | Chỉ owner được access resource của mình | CRUD API cơ bản |
+
+**Trả lời Nâng cao**
+
+```java
+// RBAC — user có role, role có permission
+@PreAuthorize("hasRole('ADMIN')")
+public void deleteUser(Long id) { ... }
+
+// Ownership-based — phổ biến nhưng dễ quên implement
+@GetMapping("/orders/{id}")
+public Order getOrder(@PathVariable Long id, @AuthenticationPrincipal User user) {
+    Order order = orderRepo.findById(id).orElseThrow();
+    // ❌ Quên check → IDOR vulnerability
+    if (!order.getUserId().equals(user.getId())) throw new ForbiddenException();
+    return order;
+}
+
+// ABAC — policy engine (OPA, Casbin)
+// "user có thể sửa document nếu: là author, HOẶC là admin, HOẶC document ở 'draft' status"
+```
+
+**Câu hỏi Trick**
+
+> HTTP 401 vs 403 — nhiều developer dùng sai. Khi nào dùng cái nào?
+
+*Trả lời*:
+- **401 Unauthorized** (tên gọi misleading): "Chưa authenticate" → cần login. Trả 401 khi token missing hoặc invalid.
+- **403 Forbidden**: "Đã authenticate nhưng không có quyền" → đã login nhưng không được làm việc này. Trả 403 khi user đã login nhưng cố access resource không thuộc về mình.
+
+Nhầm 401/403 → security risk: trả 401 thay vì 403 cho resource người khác có thể leak thông tin ("resource này tồn tại nhưng bạn chưa đủ quyền" vs "resource không tồn tại").
+
+---
+
+## Q10: Symmetric vs Asymmetric Encryption — Khi nào dùng cái nào trong thực tế
+
+**Trả lời Basic** *(So sánh quyết định)*
+
+| | Symmetric (AES, ChaCha20) | Asymmetric (RSA, ECC) |
+|---|---|---|
+| Key | 1 key cho cả encrypt và decrypt | Public key encrypt, private key decrypt |
+| Speed | Rất nhanh | Chậm hơn 100-1000x |
+| Key distribution | Vấn đề (làm sao share key an toàn?) | Không cần share private key |
+| Key size | 256 bit là đủ mạnh | 2048+ bit (RSA), 256 bit (ECC) |
+| Dùng khi | Encrypt data lớn, bulk data | Key exchange, digital signature, TLS handshake |
+
+**Thực tế — dùng cả hai (Hybrid Encryption):**
+
+```
+TLS handshake (HTTPS):
+1. Client → Server: "Xin chào"
+2. Server → Client: Certificate (public key)
+3. Client → Server: Mã hóa symmetric key bằng public key của server (RSA/ECC)
+4. Server decrypt symmetric key bằng private key
+5. Từ đây: dùng symmetric key (AES) để encrypt toàn bộ traffic
+
+Tại sao hybrid?
+- Asymmetric: giải quyết key distribution problem (step 3-4)
+- Symmetric: nhanh hơn nhiều để encrypt data thực tế (step 5)
+```
+
+**Câu hỏi tình huống**
+
+> Bạn cần lưu file nhạy cảm của user trên S3. User phải có thể download và decrypt. Thiết kế encryption như thế nào?
+
+*Trả lời*:
+```
+Upload:
+  1. Generate random AES-256 key cho mỗi file
+  2. Encrypt file bằng AES key
+  3. Encrypt AES key bằng user's public key (hoặc KMS)
+  4. Lưu encrypted file + encrypted key lên S3
+
+Download:
+  1. Fetch encrypted file + encrypted key
+  2. Decrypt AES key bằng user's private key (hoặc KMS)
+  3. Decrypt file bằng AES key
+  4. Stream file cho user
+```
+AWS KMS tự động làm điều này với **Envelope Encryption**.
+
+**Câu hỏi Trick**
+
+> "Bcrypt password" — bcrypt là gì? Tại sao không dùng SHA-256 để hash password?
+
+*Trả lời*: SHA-256 quá **nhanh** — GPU có thể thử hàng tỷ hash/giây → brute force password dễ. Bcrypt được thiết kế **chậm có chủ đích** (configurable work factor), ngốn CPU nhiều hơn. Cùng password, SHA-256 tính trong nanoseconds, bcrypt tính trong 100ms — đủ chậm để brute force trở nên vô thực tế. Nên dùng **Argon2** (winner PHC 2015) > bcrypt > scrypt > PBKDF2. Không bao giờ dùng MD5/SHA1/SHA-256 cho password.

@@ -365,3 +365,90 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 > Docker Compose `healthcheck` và K8s `livenessProbe` — cái nào ưu tiên khi deploy lên K8s?
 
 *Trả lời*: **K8s probe** có quyền cao hơn — K8s tự manage container lifecycle, không phụ thuộc Docker healthcheck. Tuy nhiên Docker healthcheck vẫn hữu ích cho `depends_on` trong Compose khi dev local.
+
+---
+
+## Q9: Container vs VM — Hiểu đúng để chọn đúng
+
+**Trả lời Basic** *(So sánh quyết định)*
+
+| | Container | Virtual Machine |
+|---|---|---|
+| Isolation | Process-level (share OS kernel) | Full OS isolation |
+| Startup | Milliseconds | Seconds đến minutes |
+| Size | MB (chỉ app + dependencies) | GB (full OS image) |
+| Overhead | Thấp | Cao (hypervisor + guest OS) |
+| Security boundary | Yếu hơn (share kernel) | Mạnh hơn |
+| Portability | Rất cao | Cao nhưng nặng hơn |
+| Dùng khi | Microservices, stateless app, CI/CD | Windows app trên Linux, legacy app, cần full OS isolation |
+
+**Quyết định nhanh:**
+```
+Cần chạy nhiều app cùng loại OS, lightweight    → Container
+Cần isolate OS hoàn toàn, mixed OS workload      → VM
+Cần cả hai (K8s trên VM)                        → VM + Container (phổ biến nhất)
+```
+
+**Trả lời Nâng cao**
+
+> **Hiểu lầm phổ biến**: "Container an toàn như VM" — SAI. Container share kernel với host. Nếu có kernel exploit, attacker có thể escape container. VM có hypervisor làm tầng cách ly thêm.
+
+> **Thực tế production**: Hầu hết cloud đều chạy container **bên trong** VM (EC2 instance chạy Docker/K8s). Tận dụng được cả 2: VM isolate tenants, container isolate services.
+
+**Câu hỏi Trick**
+
+> Container A và Container B cùng chạy trên một host. A bị compromise (root inside container). B có bị ảnh hưởng không?
+
+*Trả lời*: **Có thể** — nếu attacker escape container qua kernel exploit (dirty COW, runc vulnerabilities...). Trong production, dùng thêm: **seccomp** (filter syscall), **AppArmor/SELinux** (mandatory access control), **gVisor** (sandbox kernel per container), và **không chạy container với root**. Đây là lý do multi-tenant SaaS thường chạy container trong VM riêng per tenant.
+
+---
+
+## Q10: `docker build` layer caching — Tại sao build chậm và cách fix
+
+**Trả lời Basic** *(So sánh thứ tự instruction)*
+
+| Thứ tự | Impact khi code thay đổi |
+|---|---|
+| `FROM` | Cache miss chỉ khi đổi base image |
+| `RUN apt-get install` | Cache hit nếu không thay đổi |
+| `COPY pom.xml .` | Cache miss chỉ khi pom.xml thay đổi |
+| `RUN mvn dependency:go-offline` | Cache hit nếu pom.xml không đổi |
+| `COPY src/ .` | Cache miss mỗi khi sửa code |
+| `RUN mvn package` | Luôn chạy lại sau khi COPY src |
+
+**Trả lời Nâng cao**
+
+```dockerfile
+# ❌ Sai — copy toàn bộ trước, cache miss mỗi khi đổi 1 dòng code
+FROM maven:3.9-eclipse-temurin-17 AS builder
+COPY . .                          # Miss mỗi lần → re-download deps
+RUN mvn package -DskipTests
+
+# ✅ Đúng — copy deps manifest trước, tận dụng cache
+FROM maven:3.9-eclipse-temurin-17 AS builder
+COPY pom.xml .                    # Chỉ miss khi pom.xml thay đổi
+RUN mvn dependency:go-offline     # Cache hit khi deps không đổi
+COPY src/ ./src/                  # Miss khi code thay đổi
+RUN mvn package -DskipTests       # Chỉ re-compile, không re-download deps
+
+FROM eclipse-temurin:17-jre-alpine
+COPY --from=builder /app/target/*.jar app.jar
+ENTRYPOINT ["java", "-jar", "app.jar"]
+```
+
+**Thời gian build thực tế:**
+```
+Trước:  COPY . → miss → download 200 deps → compile → 4 phút mỗi lần
+Sau:    COPY pom.xml → hit → COPY src → miss → compile → 45 giây
+```
+
+**Câu hỏi Trick**
+
+> `RUN apt-get update && apt-get install -y curl` — tại sao phải viết trên 1 dòng thay vì 2 dòng?
+
+*Trả lời*: Layer caching — nếu tách 2 dòng:
+```dockerfile
+RUN apt-get update          # Layer 1 (có thể bị cache từ ngày cũ)
+RUN apt-get install -y curl # Layer 2 — dùng cache layer 1 đã cũ → install version cũ
+```
+Nếu `apt-get update` bị cache từ 1 tháng trước, package list đã cũ → install curl version cũ có thể có CVE. Gộp 1 dòng đảm bảo update + install luôn là 1 atomic layer.

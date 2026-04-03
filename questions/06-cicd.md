@@ -285,3 +285,88 @@ Deploy Production (manual approve)
 5. **Build khác nhau** — không promote cùng artifact
 
 Fix: Production-parity staging, same artifact, blue-green để dễ rollback.
+
+---
+
+## Q9: Trunk-based Development vs Git Flow vs GitHub Flow — Chọn gì?
+
+**Trả lời Basic** *(So sánh quyết định)*
+
+| | Git Flow | GitHub Flow | Trunk-based |
+|---|---|---|---|
+| Nhánh chính | `main` + `develop` | `main` | `main` (trunk) |
+| Feature branch | Sống lâu (ngày-tuần) | Sống ngắn (giờ-ngày) | Rất ngắn (<1 ngày) hoặc commit thẳng |
+| Release | Release branch riêng | Tag trên main | Deploy từ main liên tục |
+| Complexity | Cao | Thấp | Thấp |
+| CI frequency | Thấp (merge về develop) | Cao (mỗi PR) | Rất cao (nhiều lần/ngày) |
+| Phù hợp | Versioned software, nhiều release song song | Web app, 1 production | CD pipeline, SaaS |
+
+**Quyết định nhanh:**
+```
+App mobile/desktop có versioned release (1.0, 2.0)    → Git Flow
+Web app deploy liên tục, team nhỏ                      → GitHub Flow
+CI/CD mature, team muốn deploy nhiều lần/ngày          → Trunk-based
+```
+
+**Trả lời Nâng cao**
+
+> **Vấn đề của Git Flow** trong thế giới CI/CD:
+> - Feature branch sống lâu → merge conflict lớn khi merge về develop
+> - Nhiều nhánh parallel → integration hell
+> - Release branch → thêm overhead quản lý
+>
+> **Trunk-based** giải quyết bằng **Feature Flag**: code chưa xong vẫn merge vào main nhưng bị tắt bởi flag → không có long-lived branch → không có merge conflict.
+
+**Câu hỏi Trick**
+
+> Team đang dùng Git Flow, có feature branch sống 2 tuần. Merge về develop bị 200 conflict. Làm thế nào tránh lần sau?
+
+*Trả lời*: **Merge main/develop vào feature branch thường xuyên** (không phải ngược lại) — rebase/merge mỗi ngày để conflict nhỏ và dễ resolve. Tốt hơn: chuyển sang **trunk-based + feature flag** để không có long-lived branch. Hoặc nếu giữ Git Flow, tách feature thành nhiều PR nhỏ hơn (vertical slicing thay vì feature-by-feature).
+
+---
+
+## Q10: Deployment Strategy — Khi nào dùng Rolling, Blue-Green, Canary, hay Recreate?
+
+**Trả lời Basic** *(So sánh quyết định)*
+
+| Strategy | Downtime | Rollback | Cost | Risk | Dùng khi |
+|---|---|---|---|---|---|
+| **Recreate** | Có (kill all → deploy new) | Nhanh (redeploy old) | Thấp | Cao | Dev/staging, downtime acceptable |
+| **Rolling** | Không | Chậm (rollback từng pod) | Bình thường | Trung bình | Default K8s, stateless app |
+| **Blue-Green** | Không | Nhanh (switch LB) | Cao (2x infra) | Thấp | Database migration, cần rollback instant |
+| **Canary** | Không | Nhanh (0% về canary) | Trung bình | Thấp nhất | Test trên production traffic thật |
+
+**Trả lời Nâng cao**
+
+**Hidden problem của Rolling Update:**
+```
+v1: [pod1, pod2, pod3]
+Đang update: [pod1(v2), pod2(v2), pod3(v1)]
+              ↑ v1 và v2 chạy song song trong khoảng này
+
+Bẫy: Nếu v2 có DB schema change BREAKING với v1
+→ pod3(v1) gọi DB có schema mới → crash
+→ Rolling update phải đảm bảo v1 và v2 COMPATIBLE với nhau
+```
+
+**Blue-Green với DB migration:**
+```
+Sai: Deploy v2 (schema mới) → switch traffic → rollback khó vì DB đã đổi
+Đúng (Expand/Contract):
+  1. Migrate DB: add column nullable (backward compatible với v1)
+  2. Deploy v2 (Blue-Green) → switch traffic
+  3. Sau khi stable: remove nullable constraint, cleanup
+  4. Có thể rollback về v1 vì v1 vẫn compatible với schema
+```
+
+**Câu hỏi Trick**
+
+> Canary đang test với 5% user. Làm sao biết khi nào an toàn để tăng lên 100%?
+
+*Trả lời*: Cần **SLO comparison** giữa canary và stable:
+- Error rate canary ≤ stable (không tăng)
+- P99 latency canary ≤ stable (không tệ hơn)
+- Business metric không giảm (conversion rate, checkout success...)
+- Đủ traffic sample (thường cần ít nhất vài trăm request qua canary)
+
+Dùng tool như **Argo Rollouts** hoặc **Flagger** để tự động phân tích và promote/rollback dựa trên metrics.

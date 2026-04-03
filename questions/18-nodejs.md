@@ -477,3 +477,108 @@ const data = schema.parse(req.body); // Throw nếu invalid
 **Trick:** `eval()` và `new Function()` trong Node.js có nguy hiểm không?
 
 → **Rất nguy hiểm** nếu input đến từ user — **Remote Code Execution (RCE)**. User có thể inject code tùy ý chạy trên server. Không bao giờ eval user input. Tương tự: `child_process.exec()` với unescaped user input → **Command Injection**.
+
+---
+
+## Q9: Express vs Fastify vs NestJS vs Hono — Chọn framework nào?
+
+**Trả lời Basic** *(So sánh quyết định)*
+
+| | Express | Fastify | NestJS | Hono |
+|---|---|---|---|---|
+| Performance | Trung bình | Cao (2-4x Express) | Trung bình (overhead DI) | Rất cao (Edge-optimized) |
+| Learning curve | Thấp nhất | Thấp | Cao (DI, decorators) | Thấp |
+| Structure | Minimal, tự tổ chức | Minimal + plugin | Opinionated (module/controller) | Minimal |
+| TypeScript | Optional | Tốt | Native | Native |
+| Use case | API nhỏ, prototype | Performance-critical API | Enterprise, large team | Edge functions, Cloudflare |
+| Ecosystem | Lớn nhất | Tốt | Tốt (Angular-like) | Nhỏ nhưng growing |
+
+**Quyết định nhanh:**
+```
+Prototype nhanh, team nhỏ                    → Express
+Performance quan trọng, modern API           → Fastify
+Large team, enterprise, TypeScript-first     → NestJS
+Cloudflare Workers, Edge runtime             → Hono
+```
+
+**Trả lời Nâng cao**
+
+> **Fastify vs Express — benchmark thực tế:**
+```
+Express:  ~15,000 req/s (single core)
+Fastify:  ~45,000 req/s (single core)
+
+Lý do Fastify nhanh hơn:
+- JSON serialization bằng schema (fast-json-stringify)
+- Request/Response lifecycle được tối ưu
+- Plugin system không monkey-patch prototype
+```
+
+> **Khi nào Express vẫn là lựa chọn tốt:**
+> - Team đã quen, không muốn learning curve
+> - Cần ecosystem middleware lớn (passport, multer...)
+> - Bottleneck không phải framework mà là DB/external API
+
+**Câu hỏi Trick**
+
+> NestJS dùng Express hoặc Fastify bên dưới. Vậy performance của NestJS gần với cái nào?
+
+*Trả lời*: NestJS mặc định dùng **Express** adapter. Có thể switch sang Fastify adapter để tăng performance, nhưng một số Express middleware sẽ không tương thích. NestJS overhead từ DI container và interceptor stack làm giảm throughput so với raw Fastify/Express — cần benchmark thực tế với use case cụ thể.
+
+---
+
+## Q10: TypeScript trong Node.js — Lợi ích thực tế và chi phí ẩn
+
+**Trả lời Basic** *(So sánh)*
+
+| | JavaScript | TypeScript |
+|---|---|---|
+| Type checking | Runtime (crash khi sai type) | Compile-time (catch sớm hơn) |
+| IDE support | IntelliSense hạn chế | Full autocomplete + refactoring |
+| Refactoring | Nguy hiểm (miss reference) | An toàn hơn |
+| Bundle size | Nhỏ hơn (no compile step) | Cần compile → .js |
+| Learning curve | Thấp | Cao hơn |
+| Runtime | Node.js chạy .js | Compile → .js → Node.js |
+
+**Trả lời Nâng cao**
+
+**Chi phí ẩn của TypeScript:**
+
+```bash
+# Build pipeline phức tạp hơn
+tsc → .js → node dist/index.js  # Production
+ts-node src/index.ts             # Dev (chậm hơn)
+tsx src/index.ts                 # Dev (nhanh hơn, dùng esbuild)
+
+# Type-only errors không ngăn runtime
+// TypeScript compile pass nhưng logic vẫn sai
+function add(a: number, b: number): number {
+    return a - b;  // TypeScript không phát hiện logic error
+}
+
+# `any` type defeats the purpose
+function process(data: any) {  // Bỏ qua type checking
+    data.nonExistentMethod();  // TypeScript OK, runtime crash
+}
+```
+
+**`unknown` vs `any` — bẫy phổ biến nhất:**
+```typescript
+// ❌ any — tắt type checking
+function handleError(error: any) {
+    console.log(error.message);  // OK với TypeScript, crash nếu error là string
+}
+
+// ✅ unknown — an toàn hơn, phải narrow type trước
+function handleError(error: unknown) {
+    if (error instanceof Error) {
+        console.log(error.message);  // OK — đã narrow
+    }
+}
+```
+
+**Câu hỏi Trick**
+
+> TypeScript strict mode — bật hay không?
+
+*Trả lời*: **Luôn bật** `"strict": true` cho project mới. Strict mode bao gồm: `noImplicitAny`, `strictNullChecks`, `strictFunctionTypes`... Không có strict mode, TypeScript chỉ là "JavaScript với syntax thêm" — không catch được 80% bug. Project legacy đang chạy không strict → migrate từng file bằng `// @ts-check` hoặc tăng dần strictness.

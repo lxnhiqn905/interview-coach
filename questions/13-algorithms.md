@@ -808,3 +808,93 @@ Stack rỗng → valid  ✓
 **Trick 2**: Chuỗi rỗng `""` có phải valid không?
 
 *Trả lời*: Có — không có ngoặc nào sai, stack rỗng ở cuối → valid. Đây là edge case hay bị quên khi test.
+
+---
+
+## Q9: Array vs LinkedList vs ArrayList — Chọn đúng cấu trúc dữ liệu
+
+**Trả lời Basic** *(So sánh quyết định)*
+
+| Operation | Array | LinkedList | ArrayList |
+|---|---|---|---|
+| Access by index | O(1) | O(n) | O(1) |
+| Insert/delete đầu | O(n) shift | O(1) | O(n) shift |
+| Insert/delete cuối | O(1) amortized | O(1) (với tail ptr) | O(1) amortized |
+| Insert/delete giữa | O(n) | O(1) sau khi tìm node | O(n) |
+| Memory | Compact, cache-friendly | Extra pointer per node | Compact, dynamic resize |
+| Size thay đổi | Không (fixed) | Có | Có (resizes 1.5x) |
+
+**Quyết định nhanh:**
+```
+Biết size trước, nhiều random access           → Array
+Nhiều insert/delete ở đầu/giữa                → LinkedList
+General purpose, unknown size                   → ArrayList
+Queue/Deque                                     → ArrayDeque (không phải LinkedList!)
+```
+
+**Trả lời Nâng cao**
+
+> **Tại sao `ArrayDeque` tốt hơn `LinkedList` cho Queue:**
+> - `LinkedList` mỗi node allocate object riêng → GC pressure, cache miss (các node không liên tục trong memory)
+> - `ArrayDeque` dùng array vòng → compact, cache-friendly
+> - Java docs khuyến nghị `ArrayDeque` cho Stack và Queue
+
+**Câu hỏi Trick**
+
+> `ArrayList.get(0)` là O(1), `LinkedList.get(0)` cũng O(1) vì là head node. Vậy khi nào LinkedList thực sự chậm hơn?
+
+*Trả lời*: **Khi traverse** — `linkedList.get(500)` phải đi từ head qua 500 node → O(n). `ArrayList.get(500)` là O(1) vì array có random access. Và với `LinkedList`, mỗi `get()` trong vòng lặp là anti-pattern:
+```java
+for (int i = 0; i < linkedList.size(); i++) {
+    linkedList.get(i); // O(n) mỗi lần → toàn bộ loop là O(n²)
+}
+// Đúng: dùng Iterator hoặc for-each → O(n)
+```
+
+---
+
+## Q10: HashMap vs TreeMap vs LinkedHashMap — Quyết định nhanh cho interview
+
+**Trả lời Basic** *(Decision tree)*
+
+```
+Cần sort theo key?
+  → Có: TreeMap (O(log n) operations)
+  → Không:
+      Cần giữ insertion order?
+        → Có: LinkedHashMap (O(1) operations)
+        → Không: HashMap (O(1) operations, unordered)
+
+Cần thread-safe?
+  → Có: ConcurrentHashMap (không phải Collections.synchronizedMap)
+  → Không: HashMap/TreeMap/LinkedHashMap
+```
+
+**Trả lời Nâng cao**
+
+```java
+// HashMap — lookup nhanh nhất, không quan tâm thứ tự
+Map<String, Integer> wordCount = new HashMap<>();
+
+// LinkedHashMap — giữ insertion order (hoặc access order)
+// Use case: LRU Cache
+Map<String, Object> lruCache = new LinkedHashMap<>(16, 0.75f, true) {
+    // accessOrder=true → dùng như LRU cache
+    @Override
+    protected boolean removeEldestEntry(Map.Entry<String, Object> eldest) {
+        return size() > MAX_SIZE; // Tự xóa entry cũ nhất khi đầy
+    }
+};
+
+// TreeMap — sort theo key, range query
+TreeMap<LocalDate, List<Event>> eventsByDate = new TreeMap<>();
+// Tất cả events trong tuần này:
+eventsByDate.subMap(startOfWeek, endOfWeek).values();
+// Đây là killer feature của TreeMap — range query O(log n)
+```
+
+**Câu hỏi Trick**
+
+> Dùng mutable object làm key của HashMap — vấn đề gì?
+
+*Trả lời*: **Key bị "lost"** sau khi mutate. HashMap lưu entry theo `hashCode()` tại thời điểm put. Nếu sau đó mutate key làm `hashCode()` thay đổi → `get()` tính hash mới → vào bucket khác → không tìm thấy entry. Rule: **HashMap key phải immutable** (String, Integer, UUID) hoặc class override `equals`/`hashCode` không dựa trên mutable field.

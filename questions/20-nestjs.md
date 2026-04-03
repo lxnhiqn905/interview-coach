@@ -588,3 +588,146 @@ server.keepAliveTimeout = 65000; // > K8s terminationGracePeriodSeconds (60s)
 **Trick:** Không có graceful shutdown, điều gì xảy ra khi K8s rolling update?
 
 → K8s gửi SIGTERM và routing stop traffic đến pod. Nếu app không handle SIGTERM → **process bị kill ngay** → in-flight request bị drop → user thấy error. Với graceful shutdown: app hoàn thành request hiện tại trước khi tắt → **zero-downtime deployment**.
+
+## Q9: NestJS vs Express vs Fastify — Khi nào chọn cái nào?
+
+**Trả lời Basic**
+
+| Tiêu chí | Express | Fastify | NestJS |
+|---|---|---|---|
+| **Kiến trúc** | Minimalist, không có structure | Minimalist, schema-based | Opinionated, Angular-style |
+| **Performance** | Baseline | ~2x nhanh hơn Express | Tương đương Express/Fastify (layer overhead) |
+| **Learning curve** | Thấp | Thấp-Trung | Cao (DI, decorators, modules) |
+| **TypeScript** | Cần tự setup | Built-in | First-class citizen |
+| **Scalability** | Cần tự tổ chức | Cần tự tổ chức | Có sẵn structure |
+| **Ecosystem** | Lớn nhất | Đang lớn | Dùng được cả Express/Fastify |
+| **Khi nào dùng** | MVP, prototype, microservice nhỏ | High-performance API, I/O intensive | Enterprise app, team lớn, long-term |
+
+**Quy tắc nhanh:**
+- Solo project / MVP → **Express**
+- Performance critical (realtime, streaming) → **Fastify**
+- Team ≥ 3 người, enterprise, cần structure rõ ràng → **NestJS**
+- NestJS có thể chạy trên Fastify adapter → best of both worlds khi cần performance
+
+### Trả lời Nâng cao
+
+> **NestJS internal architecture — tại sao có overhead?**
+> NestJS thêm các layer: IoC Container (DI resolution), Module system, Interceptors/Guards/Pipes pipeline. Với cold start và high-throughput, overhead này đáng kể. Nhưng với business logic thực tế (DB query, external API), overhead này negligible.
+
+**NestJS Fastify adapter:**
+```typescript
+import { NestFactory } from '@nestjs/core';
+import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
+
+const app = await NestFactory.create<NestFastifyApplication>(
+  AppModule,
+  new FastifyAdapter()
+);
+await app.listen(3000, '0.0.0.0');
+```
+
+**Khi NestJS thực sự shine:**
+- Monorepo với nhiều apps/libs dùng chung
+- Complex business logic cần clear separation (CQRS, Event Sourcing)
+- Microservices communication (built-in TCP, gRPC, Kafka transports)
+- Cần enforce coding standards trong team
+
+### Câu hỏi tình huống
+
+**Startup cần ship MVP trong 2 tuần, team 2 người đều biết Express. Tech lead đề xuất NestJS để "scale sau này". Bạn nghĩ sao?**
+
+→ Phản biện: 2 tuần + learning curve NestJS = **ship trễ**. YAGNI principle — don't over-engineer cho requirement chưa tồn tại.
+→ Pragmatic answer: Express trước, **nếu thực sự scale và team lớn** thì migrate sau — hoặc dùng Express với folder structure tương tự NestJS (controllers/services/modules) để migration sau dễ hơn.
+
+### Câu hỏi Trick
+
+**Trick:** "NestJS inject dependency qua constructor hay property, cái nào tốt hơn?"
+
+→ **Constructor injection** — đây là best practice. Lý do: (1) dependency rõ ràng khi init class, (2) dễ mock trong unit test (không cần reflect metadata), (3) immutable dependencies, (4) NestJS recommend. Property injection chỉ dùng khi circular dependency không tránh được (và circular dep thường là design smell cần refactor).
+
+## Q10: NestJS Decorator & Middleware Pipeline — Thứ tự thực thi
+
+**Trả lời Basic**
+
+NestJS có nhiều loại "interceptor" khác nhau. Thứ tự thực thi khi một request đến:
+
+```
+Request
+  → Middleware (Express-compatible, run trước mọi thứ)
+  → Guards (AuthGuard, RolesGuard — return true/false)
+  → Interceptors (before) (logging, transform request)
+  → Pipes (validation, transformation — transform data)
+  → Controller Handler
+  → Interceptors (after) (transform response)
+  → Exception Filters (nếu có error)
+Response
+```
+
+| Layer | Mục đích | Ví dụ |
+|---|---|---|
+| **Middleware** | Cross-cutting, trước route matching | cors, helmet, logger |
+| **Guard** | AuthN/AuthZ — có được vào không? | JwtAuthGuard, RolesGuard |
+| **Interceptor** | Wrap execution — logging, caching, transform | LoggingInterceptor, CacheInterceptor |
+| **Pipe** | Validate/transform input data | ValidationPipe, ParseIntPipe |
+| **Filter** | Handle exceptions → response format | HttpExceptionFilter |
+
+### Trả lời Nâng cao
+
+> **Scopes: Global vs Controller vs Method**
+> Mỗi layer có thể apply ở 3 level. Global chạy cho tất cả routes, Controller cho tất cả method trong controller, Method chỉ cho route đó.
+
+```typescript
+// Global scope (main.ts)
+app.useGlobalGuards(new JwtAuthGuard());
+app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+app.useGlobalFilters(new HttpExceptionFilter());
+
+// Controller scope
+@UseGuards(RolesGuard)
+@UseInterceptors(CacheInterceptor)
+@Controller('users')
+export class UserController {}
+
+// Method scope — override controller scope
+@UseGuards(PublicGuard) // bypass JWT cho endpoint này
+@Get('public-info')
+getPublicInfo() {}
+```
+
+**`ValidationPipe` options quan trọng:**
+```typescript
+new ValidationPipe({
+  whitelist: true,        // Strip unknown properties khỏi DTO
+  forbidNonWhitelisted: true,  // Throw error nếu có unknown property
+  transform: true,        // Auto-transform types (string "1" → number 1)
+  transformOptions: { enableImplicitConversion: true }
+})
+```
+
+### Câu hỏi tình huống
+
+**Bạn cần log tất cả request/response (method, path, duration, status). Dùng Middleware hay Interceptor?**
+
+→ **Interceptor** tốt hơn vì: (1) có access cả request VÀ response, (2) biết execution time (wrap `next.handle()`), (3) có thể dùng RxJS operators để transform stream.
+→ Middleware chỉ có access request (không biết response status/body).
+
+```typescript
+@Injectable()
+export class LoggingInterceptor implements NestInterceptor {
+  intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
+    const start = Date.now();
+    const req = context.switchToHttp().getRequest();
+    return next.handle().pipe(
+      tap(() => console.log(`${req.method} ${req.url} — ${Date.now() - start}ms`))
+    );
+  }
+}
+```
+
+### Câu hỏi Trick
+
+**Trick:** "Guard trả về `false` thì request bị reject với HTTP status code bao nhiêu?"
+
+→ **403 Forbidden** (không phải 401). NestJS mặc định ném `ForbiddenException` khi Guard return false.
+→ 401 Unauthorized = chưa authenticate (chưa có token). 403 Forbidden = đã authenticate nhưng không có quyền.
+→ Để trả 401: Guard phải tự `throw new UnauthorizedException()` thay vì `return false`.

@@ -437,3 +437,119 @@ public class LoggingProxy implements UserService {
 - **Decorator**: Thêm **behavior mới** vào object — thường client biết đang dùng decorator. Mục đích: thêm feature động, tránh subclass explosion
 
 Ranh giới mờ trong thực tế, nhưng **intent khác nhau**: Proxy về access, Decorator về enhancement.
+
+---
+
+## Q9: Creational Patterns — Factory vs Builder vs Prototype — Khi nào dùng cái nào?
+
+**Trả lời Basic** *(So sánh quyết định)*
+
+| Pattern | Giải quyết | Dùng khi |
+|---|---|---|
+| **Factory Method** | Tạo object mà không biết class cụ thể | Subclass quyết định object nào được tạo |
+| **Abstract Factory** | Tạo family of related objects | Cần tạo nhiều object liên quan nhau (UI theme) |
+| **Builder** | Tạo object phức tạp từng bước | Object có nhiều optional parameter |
+| **Prototype** | Clone object có sẵn | Tạo object mới bằng cách copy đắt hơn tạo mới |
+| **Singleton** | Đảm bảo chỉ 1 instance | Shared resource (config, connection pool) |
+
+**Quyết định nhanh:**
+```
+Object đơn giản, 1-3 param bắt buộc           → Constructor
+Object có nhiều optional param                 → Builder
+Không biết type cụ thể khi runtime            → Factory
+Family of related objects phải compatible      → Abstract Factory
+Cần clone object phức tạp                     → Prototype
+Shared state, chỉ 1 instance                  → Singleton (cẩn thận)
+```
+
+**Trả lời Nâng cao**
+
+```java
+// Builder — khi có nhiều optional param
+// ❌ Telescoping constructor anti-pattern
+new Pizza("large", "thin", true, false, true, "cheese", "tomato");
+// Ai biết param nào là gì?
+
+// ✅ Builder
+Pizza pizza = new Pizza.Builder("large")
+    .crust("thin")
+    .addTopping("cheese")
+    .addTopping("tomato")
+    .extraCheese(true)
+    .build();
+
+// Abstract Factory — cùng code, khác theme
+interface UIFactory {
+    Button createButton();
+    TextField createTextField();
+}
+
+class DarkThemeFactory implements UIFactory { ... }
+class LightThemeFactory implements UIFactory { ... }
+
+// Client không biết theme nào đang dùng
+UIFactory factory = isDarkMode ? new DarkThemeFactory() : new LightThemeFactory();
+Button btn = factory.createButton();  // Đúng theme tự động
+```
+
+**Câu hỏi Trick**
+
+> Lombok `@Builder` auto-generate Builder — có cần hiểu Builder Pattern không?
+
+*Trả lời*: **Có** — Lombok tạo ra Builder nhưng vẫn cần hiểu: khi nào dùng Builder (vs constructor), `@Builder` với required field phải dùng `@NonNull` hoặc custom constructor để validate, và `toBuilder()` để clone và modify object immutable. Không hiểu pattern → dùng `@Builder` nhưng bỏ qua validation → object bị tạo với state không hợp lệ.
+
+---
+
+## Q10: Anti-patterns — Những pattern trông đúng nhưng thực ra sai
+
+**Trả lời Basic** *(Anti-patterns phổ biến)*
+
+| Anti-pattern | Biểu hiện | Hậu quả | Fix |
+|---|---|---|---|
+| **God Object** | 1 class làm mọi thứ (UserManager, AppController) | Khó test, khó maintain | SRP — tách trách nhiệm |
+| **Spaghetti Code** | Logic rối rắm, nhiều goto/nested | Không ai hiểu code | Refactor, design pattern |
+| **Golden Hammer** | Dùng 1 tool/pattern cho mọi vấn đề | Giải pháp không phù hợp | Chọn đúng tool |
+| **Copy-paste Programming** | Duplicate code khắp nơi | Sửa 1 chỗ quên sửa chỗ khác | DRY, Extract Method |
+| **Premature Optimization** | Optimize trước khi biết bottleneck | Phức tạp không cần thiết | Profile trước, optimize sau |
+| **Magic Numbers** | `if (code == 42)` | Không ai hiểu 42 là gì | Named constant/Enum |
+
+**Trả lời Nâng cao**
+
+> **Singleton anti-pattern** — khi Singleton trở thành God Object:
+
+```java
+// ❌ Singleton bị lạm dụng
+public class AppContext {
+    private static AppContext instance;
+    private UserService userService;
+    private OrderService orderService;
+    private PaymentService paymentService;
+    private Config config;
+    // ... 20 services khác
+    // Singleton chứa toàn bộ app → global state → không testable
+}
+
+// ✅ Dùng DI Container (Spring) thay thế
+// Spring IoC container manage lifecycle, không cần Singleton thủ công
+@Service // Mặc định là Singleton scope trong Spring
+public class UserService { ... }
+```
+
+**Câu hỏi tình huống**
+
+> Team Junior thêm feature bằng cách copy-paste class `OrderProcessor` thành `ExpressOrderProcessor`, sửa 2 dòng. Bạn review thế nào?
+
+*Trả lời*: Đây là **Copy-paste Programming / code duplication** — khi fix bug trong `OrderProcessor`, phải nhớ sửa cả `ExpressOrderProcessor`. Review comment:
+1. Xác định điểm khác nhau giữa 2 class (chỉ 2 dòng)
+2. Đề xuất: Dùng **Strategy Pattern** hoặc **Template Method** — base class `OrderProcessor` có flow chung, Express override phần khác biệt
+3. Hoặc đơn giản hơn: 1 class `OrderProcessor` với parameter `ProcessingMode` (STANDARD/EXPRESS)
+
+**Câu hỏi Trick**
+
+> "Premature optimization is the root of all evil" — Knuth. Có phải optimization lúc nào cũng sai?
+
+*Trả lời*: Chỉ **premature** optimization mới sai. Optimization đúng lúc:
+1. **Profile trước** — biết đâu là bottleneck thực sự (thường không phải chỗ bạn nghĩ)
+2. **Optimize sau khi có data** — benchmark trước và sau
+3. **Không sacrifice readability** cho micro-optimization vô nghĩa (cái loop 100ms đó chạy 1 lần/giờ, không cần optimize)
+4. **Architecture optimization** (chọn đúng data structure, algorithm) thì làm sớm — không phải premature
